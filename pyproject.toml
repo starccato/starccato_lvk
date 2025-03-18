@@ -1,0 +1,136 @@
+[build-system]
+requires = [
+    "setuptools>=64",
+    "setuptools-scm>=8.0",
+    "wheel"
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "starccato_lvk"
+dynamic = ["version"] # scm versioning (using tags)
+requires-python = ">=3.9"
+description = "JAX-VAE stellar core collapse waveform tools for LVK data analysis"
+readme = "README.rst"
+authors = [
+    { name = "Starccato Team", email = "avi.vajpeyi@gmail.com" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.8",
+]
+dependencies = [
+    "jax",
+    "flax",
+    "numpy",
+    "matplotlib",
+    "pandas",
+    "h5py",
+    "pillow",
+    "natsort",
+    "tqdm",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-cov",
+    "flake8>=5.0.4",
+    "black>=22.12.0",
+    "black[jupyter]>=22.12.0",
+    "isort",
+    "mypy",
+    "jupyter-book",
+    "pre-commit"
+]
+
+[tool.setuptools_scm]
+version_file = "src/starccato_lvk/_version.py"
+
+[tool.semantic_release]
+version_variable = "src/starccato_lvk/_version.py:__version__"
+version_source = "commit"
+commit_version_number = true
+commit_subject = "chore(release): {version}"
+commit_message = "chore(release): {version}"
+tag_format = "v{version}"
+no_local_version = true
+
+
+[tool.semantic_release.changelog]
+changelog_file = "CHANGELOG.rst"
+
+[project.urls]  # Optional
+"Homepage" = "https://starccato.github.io/starccato_lvk/"
+"Bug Reports" = "https://giuthub.com/starccato/starccato_lvk/issues"
+"Source" = "https://github.com/starccato/starccato_lvk/"
+
+
+[tool.setuptools]
+package-data = { "starccato_lvk" = [""] }
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+
+
+[tool.black]
+line-length = 79
+exclude = '''
+/(
+    \.eggs
+  | \.git
+  | \.hg
+  | \.mypy_cache
+  | \.tox
+  | \.venv
+  | _build
+  | buck-out
+  | build
+  | dist
+)/
+'''
+
+[tool.isort]
+profile = "black"
+line_length = 79
+
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = [
+    "starccato_jax"
+]
+
+[tool.coverage.paths]
+source = [
+    "src/starccato_lvk",
+    "**/site-packages/starccato_lvk"
+]
+
+[tool.coverage.report]
+exclude_lines = [
+    "pragma: no cover",
+    "def __repr__",
+    "if self.debug",
+    "raise AssertionError",
+    "raise NotImplentedError",
+    "if 0:",
+    "if __name__ == .__main__.:"
+]
+
+ignore_errors = true
+
+[tool.coverage.html]
+title = "starccato_jax Coverage Test Report"
+
+
+[[tool.mypy.overrides]]
+module = "matplotlib.*,scipy.*,numba.*,bilby.*"
+ignore_missing_imports = true
