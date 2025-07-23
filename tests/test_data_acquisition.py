@@ -3,6 +3,14 @@ import os
 
 GLITCH_TIME = 1263748255.33508
 
+
+"""
+├── L-L1_GWOSC_O3b_4KHZ_R1-1256652800-4096.hdf5
+├── L-L1_GWOSC_O3b_4KHZ_R1-1263747072-4096.hdf5
+└── L-L1_GWOSC_O3b_4KHZ_R1-9999999999-4096.hdf5
+"""
+
+
 def test_data_loader(outdir, mock_data_dir):
     load_analysis_chunk_and_psd(GLITCH_TIME, outdir=outdir)
     assert os.path.exists(os.path.join(outdir, f"analysis_chunk_{int(GLITCH_TIME)}.png"))
