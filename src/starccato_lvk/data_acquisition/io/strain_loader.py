@@ -5,11 +5,13 @@ from typing import Dict
 
 from gwpy.frequencyseries import FrequencySeries
 from gwpy.timeseries import TimeSeries
-
-
 from gwpy.timeseries import StateVector
-file = "/datasets/LIGO/public/gwosc.osgstorage.org/gwdata/O3b/strain.4k/hdf.v1/V1/1259339776/V-V1_GWOSC_O3b_4KHZ_R1-1259835392-4096.hdf5"
-state = StateVector.read(file, format='hdf5.gwosc')
+
+#
+#
+
+# file = "/datasets/LIGO/public/gwosc.osgstorage.org/gwdata/O3b/strain.4k/hdf.v1/V1/1259339776/V-V1_GWOSC_O3b_4KHZ_R1-1259835392-4096.hdf5"
+# state = StateVector.read(file, format='hdf5.gwosc')
 
 
 from starccato_lvk.data_acquisition import config
@@ -86,9 +88,35 @@ def load_state_vector(gps_start: float, gps_end: float) -> StateVector:
     return state_vector
 
 
+def generate_times_for_valid_data(gps_start: float, gps_end: float):
+    """Generate a list of GPS times for valid data segments that pass CAT3 CBC test"""
+    gps_segments = np.array([[int(seg[0]), int(seg[1])]
+                             for seg in v1_flag.active])
+
+    def pick_segments(seg_array, n_segments=1000, seg_len=4, min_gap=1000):
+        picked = []
+        last_end = -np.inf
+        for start, stop in seg_array:
+            t = max(start, last_end + min_gap)
+            while t + seg_len <= stop:
+                picked.append((t, t + seg_len))
+                if len(picked) == n_segments:
+                    return np.array(picked)
+                last_end = t + seg_len
+                t = last_end + min_gap
+        return np.array(picked)
+
+    all_segments = pick_segments(gps_segments)
+
+
+
+
 def _get_data_files_and_gps_times() -> Dict[int, str]:
     """Get a mapping of GPS times (start times) to HDF5 files."""
-    files = glob.glob(f"{config.DATA_DIR}/*/*.hdf5")
+    search_str = f"{config.DATA_DIR}/*/*.hdf5"
+    files = glob.glob(search_str)
+    if not files:
+        raise FileNotFoundError(f"No HDF5 files found at {search_str}")
     gps_starts = [int(re.search(r"R1-(\d+)-\d+\.hdf5", p).group(1)) for p in files]
     return {gps: f for gps, f in zip(gps_starts, files)}
 
@@ -97,6 +125,10 @@ def _get_fname_for_gps(gps: float, gps_to_files: Dict[int, str]) -> str:
     """Get the filename for a given GPS time."""
     gps = int(gps)
     all_start_times = sorted(gps_to_files.keys())
+    file = None
     for i in range(len(all_start_times) - 1):
         if all_start_times[i] <= gps < all_start_times[i + 1]:
-            return gps_to_files[all_start_times[i]]
+            file =  gps_to_files[all_start_times[i]]
+    if file is None:
+        raise FileNotFoundError(f"No file found for GPS time {gps}.")
+    return file
