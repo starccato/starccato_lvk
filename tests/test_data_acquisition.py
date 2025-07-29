@@ -37,3 +37,9 @@ def test_utils(mock_get_data_files_and_gps_times):
     files_2 = _get_fnames_for_range(110, 151)
     assert len(files) < len(files_2)
     assert len(_get_fnames_for_range(10, 11)) == 0
+
+
+def test_load_blips():
+    from starccato_lvk.data_acquisition.io.glitch_catalog import get_blip_trigger_time
+    blips_times = [get_blip_trigger_time(i) for i in range(10)]
+    assert len(blips_times)==10

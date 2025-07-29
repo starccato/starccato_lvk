@@ -37,7 +37,7 @@ def load_only_noise_segments() -> np.ndarray:
     return noise_segments
 
 
-def get_noise_trigger_time(idx) -> int:
+def get_noise_trigger_time(idx) -> float:
     noise_segments = load_only_noise_segments()
     assert idx < len(noise_segments), f"Index {idx} out of bounds for noise segments."
-    return int(noise_segments[idx, 1] - 1)
+    return float(noise_segments[idx, 1] - 1)
