@@ -23,7 +23,33 @@ def generate_times_for_valid_data(
         2D numpy array of shape (N, 2) with start-stop GPS times for valid segments
     """
 
-    state_vec = load_state_vector(gps_start, gps_end)
+    files = _get_fnames_for_range(gps_start, gps_end)
+
+    valid_times = [
+        _get_valid_start_stops_for_one_file(file, segment_length, min_gap)
+        for file in files
+    ]
+
+    # Concatenate all valid segments from all files
+    if len(valid_times) == 0:
+        raise ValueError("No valid segments found in the provided files.")
+    valid_start_stop = np.concatenate(valid_times, axis=0)
+    # Save the valid segments to a file if outdir is provided
+    print(f"Identified {len(valid_start_stop)} valid segments.")
+
+    os.makedirs(outdir, exist_ok=True)
+    plot_valid_segments(valid_start_stop, outdir=outdir)
+    # save txt with [start, stop] pairs
+    np.savetxt(
+        os.path.join(outdir, f"valid_segments_{int(gps_start)}-{int(gps_end)}.txt"),
+        valid_start_stop, fmt='%d',
+        header='Start GPS, Stop GPS',
+        comments=''
+    )
+
+
+def _get_valid_start_stops_for_one_file(file, segment_length, min_gap):
+    state_vec = StateVector.read(file, format='hdf5.gwosc')
 
     # Parse state vector into data quality flags
     flags = state_vec.to_dqflags()
@@ -55,18 +81,7 @@ def generate_times_for_valid_data(
         raise ValueError("No valid segments found that pass CAT3 CBC test with the given parameters.")
 
     valid_start_stop = np.array(valid_start_stop)
-    # Save the valid segments to a file if outdir is provided
-    print(f"Identified {len(valid_start_stop)} valid segments.")
-
-    os.makedirs(outdir, exist_ok=True)
-    plot_valid_segments(valid_start_stop, outdir=outdir)
-    # save txt with [start, stop] pairs
-    np.savetxt(
-        os.path.join(outdir, f"valid_segments_{int(gps_start)}-{int(gps_end)}.txt"),
-        valid_start_stop, fmt='%d',
-        header='Start GPS, Stop GPS',
-        comments=''
-    )
+    return valid_start_stop
 
 
 def load_state_vector(gps_start: float, gps_end: float) -> StateVector:
