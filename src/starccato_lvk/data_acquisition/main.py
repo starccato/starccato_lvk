@@ -7,7 +7,7 @@ from .io.only_noise_data import get_noise_trigger_time
 
 @click.command("get_analysis_data")
 @click.argument('idx', type=int, default=0)
-@click.argument('--trigger_type', type=str, default='blip', help='Type of trigger: blip or noise')
+@click.option('--trigger_type', type=str, default='blip', help='Type of trigger: blip or noise')
 @click.option('--outdir', type=str, default='.', help='Output directory for analysis chunk and PSD')
 def cli_get_analysis_data(idx, trigger_type, outdir):
     if trigger_type == 'blip':
