@@ -1,8 +1,9 @@
 from starccato_lvk.data_acquisition.io.strain_loader import load_analysis_chunk_and_psd
+from starccato_lvk.data_acquisition.io.determine_valid_segments import load_state_vector, generate_times_for_valid_data, plot_valid_segments
+
 import os
 
 GLITCH_TIME = 1263748255.33508
-
 
 """
 ├── L-L1_GWOSC_O3b_4KHZ_R1-1256652800-4096.hdf5
@@ -18,10 +19,21 @@ def test_data_loader(outdir, mock_data_dir):
 
 
 def test_load_state_vector(outdir, mock_data_dir):
-    from starccato_lvk.data_acquisition.io.strain_loader import load_state_vector
     gps_start = GLITCH_TIME - 65
     gps_end = GLITCH_TIME + 1
     state_vector = load_state_vector(gps_start, gps_end)
     assert state_vector is not None
     plot = state_vector.plot(insetlabels=True)
     plot.savefig(os.path.join(outdir, f"state_vector_{int(GLITCH_TIME)}.png"))
+
+    T0 = 1263743000
+    T1 = 1263750000
+    times = generate_times_for_valid_data(T0, T1, segment_length=130, min_gap=10, outdir=outdir)
+
+def test_utils(mock_get_data_files_and_gps_times):
+    from starccato_lvk.data_acquisition.io.utils import _get_fnames_for_range
+    files = _get_fnames_for_range(110, 150)
+    assert len(files) > 0
+    files_2 = _get_fnames_for_range(110, 151)
+    assert len(files) < len(files_2)
+    assert len(_get_fnames_for_range(10, 11)) == 0
