@@ -42,5 +42,11 @@ def load_blip_glitch_catalog(min_confidence=0.9, min_duration=DURATION):
     return pd.read_csv(BLIP_CSV_FILE)
 
 
-FULL_GLITCH_CATALOG = load_full_glitch_catalog()
-BLIP_GLITCH_CATALOG = load_blip_glitch_catalog()
+def get_blip_trigger_time(idx:int):
+    """Get the trigger time for a specific blip glitch."""
+    blip_df = load_blip_glitch_catalog()
+    if idx < len(blip_df):
+        return int(blip_df.iloc[idx]['event_time'])
+    else:
+        raise IndexError(f"Index {idx} out of bounds for blip glitches.")
+
