@@ -4,6 +4,14 @@ from .io.strain_loader import load_analysis_chunk_and_psd
 from .io.glitch_catalog import get_blip_trigger_time
 from .io.only_noise_data import get_noise_trigger_time
 
+from tqdm import tqdm
+import subprocess
+
+def _run_quiet(cmd):
+    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+
 
 @click.command("get_analysis_data")
 @click.argument('idx', type=int, default=0)
@@ -36,3 +44,11 @@ def cli_get_valid_times(gps_start, gps_end, segment_length, min_gap, outdir):
         min_gap=min_gap,
         outdir='outdir'
     )
+
+
+@click.command("collect_lvk_data")
+@click.argument('num', type=int, default=100)
+def cli_collect_lvk_data(num:int):
+    for i in tqdm(range(num)):
+        _run_quiet(["get_analysis_data", str(i), "--trigger_type", "blip"])
+        _run_quiet(["get_analysis_data", str(i), "--trigger_type", "noise"])
