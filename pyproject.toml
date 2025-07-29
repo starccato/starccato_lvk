@@ -134,3 +134,8 @@ title = "starccato_jax Coverage Test Report"
 [[tool.mypy.overrides]]
 module = "matplotlib.*,scipy.*,numba.*,bilby.*"
 ignore_missing_imports = true
+
+
+[project.scripts]
+get_analysis_data = "starccato_lvk.data_acquisition.main:cli_get_analysis_data"
+get_valid_times = "starccato_lvk.data_acquisition.main:cli_get_valid_times"
