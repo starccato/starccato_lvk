@@ -1,7 +1,8 @@
-from starccato_lvk.data_acquisition.io.strain_loader import load_analysis_chunk_and_psd
+from starccato_lvk.data_acquisition.io.strain_loader import load_analysis_chunk_and_psd, strain_loader
 from starccato_lvk.data_acquisition.io.determine_valid_segments import load_state_vector, generate_times_for_valid_data, plot_valid_segments
-
+from conftest import get_trigger_time
 import os
+import jax
 
 GLITCH_TIME = 1263748255.33508
 
@@ -29,6 +30,7 @@ def test_load_state_vector(outdir, mock_data_dir):
     T0 = 1263743000
     T1 = 1263750000
     times = generate_times_for_valid_data(T0, T1, segment_length=130, min_gap=10, outdir=outdir)
+    assert len(times) > 0
 
 def test_utils(mock_get_data_files_and_gps_times):
     from starccato_lvk.data_acquisition.io.utils import _get_fnames_for_range
@@ -43,3 +45,8 @@ def test_load_blips():
     from starccato_lvk.data_acquisition.io.glitch_catalog import get_blip_trigger_time
     blips_times = [get_blip_trigger_time(i) for i in range(10)]
     assert len(blips_times)==10
+
+def test_injection(outdir, mock_data_dir):
+    t0 = get_trigger_time()
+    rng = jax.random.PRNGKey(0)
+    strain_loader(t0, outdir=outdir, add_injection=True, distance=1000000, rng=rng)
