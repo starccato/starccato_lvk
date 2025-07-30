@@ -5,7 +5,7 @@ from matplotlib.ticker import ScalarFormatter
 import matplotlib.gridspec as gridspec
 
 
-def plot(data: TimeSeries, psd: FrequencySeries, event_time: float, fname: str):
+def plot(data: TimeSeries, psd: FrequencySeries, event_time: float, fname: str, injection=None):
     """
     Plot the spectrogram and analysis data around an event time.
 
@@ -26,7 +26,7 @@ def plot(data: TimeSeries, psd: FrequencySeries, event_time: float, fname: str):
 
     # Plot the spectrogram
     plot_psd_and_analysis_data(psd, data, ax1)
-    plot_analysis_timeseries(data, event_time, ax2)
+    plot_analysis_timeseries(data, event_time, ax2, injection)
     plot_qtransform(data, event_time, ax3)
 
     plt.suptitle(f"Event Time: {event_time:.3f} GPS", fontsize=16)
@@ -93,7 +93,7 @@ def plot_psd_and_analysis_data(psd: FrequencySeries, analysis_data: TimeSeries, 
     ax.legend(frameon=False, bbox_to_anchor=(1., 1.), loc="lower right", ncol=2)
 
 
-def plot_analysis_timeseries(analysis_data: TimeSeries, event_time: float, ax):
+def plot_analysis_timeseries(analysis_data: TimeSeries, event_time: float, ax, injection=None):
     """
     Plot analysis data segment around an event time.
 
@@ -105,6 +105,14 @@ def plot_analysis_timeseries(analysis_data: TimeSeries, event_time: float, ax):
     d = analysis_data.whiten()
     t = event_time - analysis_data.times.value
     ax.plot(t, d.value, label="Analysis Data", color="tab:orange")
+
+    # twin axis for the second y-axis
+    if injection is not None:
+        # Plot the injection signal if provided
+        ax2 = ax.twinx()
+        ax2.plot(t, injection, label="Injected Signal", color="tab:blue", alpha=0.5)
+
+
     # ax.set_epoch(event_time)
     ax.set_xlim(- 0.1,  + 0.1)
     ax.axvline(0, color='red',  label='Event Time', alpha=0.3,lw=3)

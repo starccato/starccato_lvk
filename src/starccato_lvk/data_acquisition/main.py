@@ -1,33 +1,36 @@
 import click
 from .io.determine_valid_segments import generate_times_for_valid_data
-from .io.strain_loader import load_analysis_chunk_and_psd
+from .io.strain_loader import strain_loader
 from .io.glitch_catalog import get_blip_trigger_time
 from .io.only_noise_data import get_noise_trigger_time
 
 from tqdm import tqdm
-import subprocess
-
-def _run_quiet(cmd):
-    subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-
 
 
 @click.command("get_analysis_data")
 @click.argument('idx', type=int, default=0)
-@click.option('--trigger_type', type=str, default='blip', help='Type of trigger: blip or noise')
+@click.option('--trigger_type', type=str, default='blip', help='Type of trigger: blip, noise, or signal')
 @click.option('--outdir', type=str, default='.', help='Output directory for analysis chunk and PSD')
 def cli_get_analysis_data(idx, trigger_type, outdir):
+    kwargs = {}
     if trigger_type == 'blip':
-        trigger_time = get_blip_trigger_time(idx)
+        kwargs = dict(
+            trigger_time=get_blip_trigger_time(idx)
+        )
     elif trigger_type == 'noise':
-        trigger_time = get_noise_trigger_time(idx)
+        kwargs = dict(
+            trigger_time=get_noise_trigger_time(idx)
+        )
+    elif trigger_type == 'signal':
+        kwargs = dict(
+            add_injection=True,
+            trigger_time=get_noise_trigger_time(idx),
+            rng=idx,
+            distance=kwargs['distance'],
+        )
     if outdir == '.':
         outdir = f'outdir_{trigger_type}'
-    load_analysis_chunk_and_psd(
-        trigger_time=trigger_time,
-        outdir=outdir
-    )
+    strain_loader(**kwargs, outdir=outdir)
 
 
 @click.command("get_valid_times")
@@ -48,7 +51,8 @@ def cli_get_valid_times(gps_start, gps_end, segment_length, min_gap, outdir):
 
 @click.command("collect_lvk_data")
 @click.argument('num', type=int, default=100)
-def cli_collect_lvk_data(num:int):
+def cli_collect_lvk_data(num: int):
     for i in tqdm(range(num)):
-        _run_quiet(["get_analysis_data", str(i), "--trigger_type", "blip"])
-        _run_quiet(["get_analysis_data", str(i), "--trigger_type", "noise"])
+        cli_get_analysis_data(i, trigger_type='blip')
+        cli_get_analysis_data(i, trigger_type='noise')
+        cli_get_analysis_data(i, trigger_type='signal')
