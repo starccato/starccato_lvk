@@ -9,7 +9,6 @@ from .plotting import plot
 from .utils import _get_fnames_for_range
 
 from starccato_jax.waveforms import StarccatoCCSNe
-from .strain_loader import load_analysis_chunk_and_psd, _save_analysis_chunk_and_psd
 
 import numpy as np
 
@@ -21,12 +20,12 @@ def strain_loader(trigger_time: float, outdir: str = None, add_injection: bool =
     injection = None
     if add_injection:
         # 2. Create the CCSNe signal
-        injection = np.array(StarccatoCCSNe.generate(rng, n=1)[0], dtype=np.float64)
-        injection /= distance
-        # 3. Inject the CCSNe signal into the noise data (ensure that the signal PEAK is at the trigger time)
-        ccsne_start_time = trigger_time - len(injection) // 2
-        ccsne_end_time = ccsne_start_time + len(injection)
-        data.value[ccsne_start_time:ccsne_end_time] += injection
+        injection = np.array(StarccatoCCSNe().generate(rng=rng, n=1)[0], dtype=np.float64)
+        rel_distance = 100 # relative distance in Mpc
+        injection = injection / np.linalg.norm(injection)  # normalize the injection
+
+        injection = injection * 10e-20 # scale the injection to the desired distance
+        data = _inject(data, injection, trigger_time)
 
     if outdir:
         _save_analysis_chunk_and_psd(data, psd, trigger_time, outdir, injection=injection)
@@ -48,12 +47,12 @@ def load_analysis_chunk_and_psd(trigger_time: float) -> (TimeSeries, FrequencySe
 def _save_analysis_chunk_and_psd(analysis_chunk, psd, trigger_time: float, outdir: str, injection=None) -> None:
     os.makedirs(outdir, exist_ok=True)
     fname = os.path.join(outdir, f"analysis_chunk_{int(trigger_time)}.png")
-    plot(analysis_chunk, psd, trigger_time, fname)
+    plot(analysis_chunk, psd, trigger_time, fname, injection=injection)
     # save the analysis chunk and psd
     analysis_fn = os.path.join(outdir, f"analysis_chunk_{int(trigger_time)}.hdf5")
     psd_fn = os.path.join(outdir, f"psd_{int(trigger_time)}.hdf5")
-    analysis_chunk.write(analysis_fn, format='hdf5')
-    psd.write(psd_fn, format='hdf5')
+    analysis_chunk.write(analysis_fn, format='hdf5', overwrite=True)
+    psd.write(psd_fn, format='hdf5', overwrite=True)
 
     if injection is not None:
         injection_fn = os.path.join(outdir, f"injection_{int(trigger_time)}.hdf5")
@@ -82,3 +81,29 @@ def load_strain_segment(gps_start: float, gps_end: float) -> TimeSeries:
     """Load strain data segment from HDF5 files."""
     files = _get_fnames_for_range(gps_start, gps_end)
     return TimeSeries.read(files, format='hdf5.gwosc', start=gps_start, end=gps_end)
+
+
+def _inject(data: TimeSeries, injection: np.ndarray, trigger_time: float) -> TimeSeries:
+    n_inj = len(injection)
+    fs = data.sample_rate.value  # sampling frequency in Hz
+    dt = 1 / fs  # time step between samples
+
+    # Calculate half the duration of the injection in seconds
+    t_offset = n_inj / (2 * fs)
+
+    # Define the start and end times of the injection
+    t0 = trigger_time - t_offset
+    t1 = trigger_time + t_offset
+
+    # Convert t0 and t1 to sample indices
+    start_time = data.times.value[0]  # absolute start time of the TimeSeries in GPS
+    t0_idx = int(round((t0 - start_time) * fs))
+    t1_idx = t0_idx + n_inj  # inject exactly n_inj samples
+
+    # Safety check to avoid IndexError
+    if t0_idx < 0 or t1_idx > len(data):
+        raise ValueError("Injection exceeds bounds of TimeSeries.")
+
+    # Inject the signal
+    data.value[t0_idx:t1_idx] += injection
+    return data

@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import numpy as np
 from gwpy.frequencyseries import FrequencySeries
 from gwpy.timeseries import TimeSeries
 from matplotlib.ticker import ScalarFormatter
@@ -85,7 +86,9 @@ def plot_psd_and_analysis_data(psd: FrequencySeries, analysis_data: TimeSeries, 
     ax.plot(psd, label="LIGO-Livingston", color="gwpy:ligo-livingston")
     ax.plot(signal_psd, label="Analysis Data", color="tab:orange", alpha=0.3)
     ax.set_xlim(16, 1600)
-    ax.set_ylim(1e-24**2, 1e-21**2)
+
+    # ax.set_ylim(1e-24**2, 1e-21**2)
+    ax.set_ylim(bottom=1e-24**2)
     ax.set_yscale('log', base=10)
     ax.set_xscale('log', base=10)
     ax.set_ylabel(r"Strain PSD [1/Hz]")
@@ -110,11 +113,12 @@ def plot_analysis_timeseries(analysis_data: TimeSeries, event_time: float, ax, i
     if injection is not None:
         # Plot the injection signal if provided
         ax2 = ax.twinx()
-        ax2.plot(t, injection, label="Injected Signal", color="tab:blue", alpha=0.5)
+        inj_t = np.arange(-0.0625, 0.0625, 1/4096)  # assuming 4096 Hz sampling rate
+        ax2.plot(inj_t, injection, label="Injected Signal", color="tab:blue", alpha=0.5)
+        ax2.grid(False)
 
-
-    # ax.set_epoch(event_time)
-    ax.set_xlim(- 0.1,  + 0.1)
+    # tlim -- 512/2 samples at 4096 Hz is 0.125 seconds
+    ax.set_xlim(- 0.0625,  + 0.0625)
     ax.axvline(0, color='red',  label='Event Time', alpha=0.3,lw=3)
     ax.set_xlabel(f'Time [s] from event')
     ax.set_ylabel('Whitened Strain')
