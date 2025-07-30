@@ -2,12 +2,37 @@
 
 from gwpy.frequencyseries import FrequencySeries
 from gwpy.timeseries import TimeSeries
+import h5py
 
 import os
 from .plotting import plot
 from .utils import _get_fnames_for_range
 
-def load_analysis_chunk_and_psd(trigger_time: float, outdir: str = None) -> (TimeSeries, FrequencySeries):
+from starccato_jax.waveforms import StarccatoCCSNe
+from .strain_loader import load_analysis_chunk_and_psd, _save_analysis_chunk_and_psd
+
+import numpy as np
+
+
+def strain_loader(trigger_time: float, outdir: str = None, add_injection: bool = False, distance: float = None,
+                  rng=None) -> None:
+    data, psd = load_analysis_chunk_and_psd(trigger_time)
+
+    injection = None
+    if add_injection:
+        # 2. Create the CCSNe signal
+        injection = np.array(StarccatoCCSNe.generate(rng, n=1)[0], dtype=np.float64)
+        injection /= distance
+        # 3. Inject the CCSNe signal into the noise data (ensure that the signal PEAK is at the trigger time)
+        ccsne_start_time = trigger_time - len(injection) // 2
+        ccsne_end_time = ccsne_start_time + len(injection)
+        data.value[ccsne_start_time:ccsne_end_time] += injection
+
+    if outdir:
+        _save_analysis_chunk_and_psd(data, psd, trigger_time, outdir, injection=injection)
+
+
+def load_analysis_chunk_and_psd(trigger_time: float) -> (TimeSeries, FrequencySeries):
     """Load strain data and compute PSD around a trigger time."""
     analysis_start = trigger_time - 1
     gps_start = analysis_start - 65
@@ -17,18 +42,23 @@ def load_analysis_chunk_and_psd(trigger_time: float, outdir: str = None) -> (Tim
     psd_chunk = data.crop(gps_start, analysis_start)
     psd = generate_psd(psd_chunk)
 
-    if outdir:
-        os.makedirs(outdir, exist_ok=True)
-        fname = os.path.join(outdir, f"analysis_chunk_{int(trigger_time)}.png")
-        plot(analysis_chunk, psd, trigger_time, fname)
-        # save the analysis chunk and psd
-        analysis_fn = os.path.join(outdir, f"analysis_chunk_{int(trigger_time)}.hdf5")
-        psd_fn = os.path.join(outdir, f"psd_{int(trigger_time)}.hdf5")
-        if not os.path.exists(analysis_fn):
-            analysis_chunk.write(analysis_fn, format='hdf5')
-        if not os.path.exists(psd_fn):
-            psd.write(psd_fn, format='hdf5')
     return analysis_chunk, psd
+
+
+def _save_analysis_chunk_and_psd(analysis_chunk, psd, trigger_time: float, outdir: str, injection=None) -> None:
+    os.makedirs(outdir, exist_ok=True)
+    fname = os.path.join(outdir, f"analysis_chunk_{int(trigger_time)}.png")
+    plot(analysis_chunk, psd, trigger_time, fname)
+    # save the analysis chunk and psd
+    analysis_fn = os.path.join(outdir, f"analysis_chunk_{int(trigger_time)}.hdf5")
+    psd_fn = os.path.join(outdir, f"psd_{int(trigger_time)}.hdf5")
+    analysis_chunk.write(analysis_fn, format='hdf5')
+    psd.write(psd_fn, format='hdf5')
+
+    if injection is not None:
+        injection_fn = os.path.join(outdir, f"injection_{int(trigger_time)}.hdf5")
+        with h5py.File(injection_fn, 'w') as f:
+            f.create_dataset('injection', data=injection)
 
 
 def generate_psd(data: TimeSeries) -> FrequencySeries:
