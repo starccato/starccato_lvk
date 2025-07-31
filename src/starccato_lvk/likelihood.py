@@ -1,15 +1,12 @@
-import jax.numpy as jnp
-from jax import random
 from typing import Tuple
 
 import jax.numpy as jnp
-import numpyro
 import numpyro.distributions as dist
 from gwpy.frequencyseries import FrequencySeries
 from gwpy.timeseries import TimeSeries
 from jax import random
-
-from starccato_jax.waveforms import StarccatoVAE, StarccatoCCSNe
+from scipy.signal.windows import tukey
+from starccato_jax.waveforms import StarccatoVAE
 
 
 class StarccatoLVKLikelihood:
@@ -32,7 +29,7 @@ class StarccatoLVKLikelihood:
             psd_freq: jnp.ndarray,
             psd_values: jnp.ndarray,
             starccato_model: StarccatoVAE,
-            freq_range: Tuple[float, float] = (20.0, 2048.0),
+            freq_range: Tuple[float, float] = (100.0, 2048.0),
     ):
         """
         Initialize the likelihood.
@@ -45,11 +42,15 @@ class StarccatoLVKLikelihood:
             starccato_model: Trained starccato model for waveform generation
             freq_range: Frequency range for analysis (Hz)
         """
-        self.strain_data = strain_data
+
+
+        self.window = jnp.array(tukey(len(strain_data),alpha=0.1))  # Tukey window for tapering
+        self.strain_data = strain_data * self.window  # Apply window to strain data
         self.time_array = time_array
         self.psd_freq = psd_freq
         self.psd_values = psd_values
         self.starccato_model = starccato_model
+
 
         # Validate inputs
         if len(strain_data) != 512:
@@ -64,12 +65,12 @@ class StarccatoLVKLikelihood:
 
         # Frequency domain properties for proper GW likelihood
         self.df = 1.0 / self.duration
-        self.freq_array = jnp.fft.fftfreq(len(time_array), self.dt)
+        self.freq_array = jnp.fft.rfftfreq(len(time_array), self.dt)
         self.freq_mask = (self.freq_array >= freq_range[0]) & (self.freq_array <= freq_range[1])
 
         # Interpolate PSD to match our frequency grid
         self.psd_interp = jnp.interp(
-            self.freq_array[self.freq_mask],
+            self.freq_array,
             psd_freq,
             psd_values,
             left=jnp.inf,
@@ -77,7 +78,7 @@ class StarccatoLVKLikelihood:
         )
 
         # Pre-compute data FFT for frequency-domain likelihood
-        self.data_fft = jnp.fft.fft(strain_data)
+        self.data_fft = jnp.fft.rfft(self.strain_data)
 
     @classmethod
     def from_hdf5_files(
@@ -85,6 +86,7 @@ class StarccatoLVKLikelihood:
             strain_file: str,
             psd_file: str,
             starccato_model: StarccatoVAE,
+            injection=None
             **kwargs
     ):
         # Load strain data
@@ -98,6 +100,9 @@ class StarccatoLVKLikelihood:
         t_offset = n_samps / 2 / fs  # 256 samples before and after t0
 
         strain_data = strain_data.crop(t0 - t_offset, t0 + t_offset)  # 512 samples
+        # WHAT IF WE INJECT HERE??
+
+        ## TODO: ADD INJECTION HERE
 
         return cls(
             strain_data=strain_data.value,
@@ -129,7 +134,7 @@ class StarccatoLVKLikelihood:
             y_model: model strain data in time domain
         """
         # FFT model to frequency domain
-        model_fft = jnp.fft.fft(y_model)
+        model_fft = jnp.fft.rfft(y_model)
 
         # Compute residual
         residual = model_fft - self.data_fft
@@ -139,7 +144,7 @@ class StarccatoLVKLikelihood:
         residual_pos = residual[self.freq_mask]
 
         inner_product = 4 * jnp.real(
-            jnp.sum(jnp.conj(residual_pos) * residual_pos / self.psd_interp) * self.df
+            jnp.sum(jnp.conj(residual_pos) * residual_pos / self.psd_interp[self.freq_mask]) * self.df
         )
 
         # Handle invalid PSD values
@@ -160,14 +165,14 @@ class StarccatoLVKLikelihood:
             time_shift: time shift in seconds (positive = delay signal)
         """
         # FFT to frequency domain
-        signal_fft = jnp.fft.fft(signal)
+        signal_fft = jnp.fft.rfft(signal)
 
         # Apply phase shift: exp(-2πift) for time shift t
         phase_shift = jnp.exp(-2j * jnp.pi * self.freq_array * time_shift)
         signal_fft_shifted = signal_fft * phase_shift
 
         # Return to time domain
-        return jnp.real(jnp.fft.ifft(signal_fft_shifted))
+        return jnp.real(jnp.fft.irfft(signal_fft_shifted))
 
     def apply_distance_scaling(self, signal: jnp.ndarray, distance: float,
                                reference_distance: float = 100.0) -> jnp.ndarray:
@@ -189,24 +194,30 @@ class StarccatoLVKLikelihood:
             time_shift: float = 0.0,
             distance: float = 100.0,
     ) -> float:
-        """
-        Compute log likelihood for given latent variables with time and distance parameters.
-
-        Args:
-            theta: latent variables
-            rng: random key for starccato generation
-            time_shift: time jitter in seconds
-            distance: luminosity distance in Mpc
-        """
-        # Generate base waveform from latent variables
-        y_model = self.starccato_model.generate(z=theta, rng=rng) * 10e-20
-
-        # Apply distance scaling
-        y_model = self.apply_distance_scaling(y_model, distance)
-
-        # Apply time shift
-        y_model = self.apply_time_shift(y_model, time_shift)
-
+        y_model = self.call_model(theta, rng, time_shift, distance)
         return self.frequency_domain_log_likelihood(y_model)
 
+    def call_model(self,
+                   theta: jnp.ndarray,
+                   rng: random.PRNGKey,
+                   time_shift: float = 0.0,
+                   distance: float = 100.0,
+                   ) -> float:
+        y_model = self.starccato_model.generate(z=theta, rng=rng)
+        y_model = y_model * self.window  # Apply the same window as the data
+        y_model = self.apply_distance_scaling(y_model, distance)
+        # y_model = self.apply_time_shift(y_model, time_shift)
+        return y_model
 
+
+    @property
+    def whitened_data(self) -> jnp.ndarray:
+        """
+        Return whitened data in time domain.
+        """
+        return whiten(self.strain_data, self.psd_interp, self.sample_rate)
+
+def whiten(data, psd, fs):
+    data_fft = jnp.fft.rfft(data)
+    whitened_fft = data_fft / jnp.sqrt(psd / (0.5 * fs))
+    return jnp.fft.irfft(whitened_fft, n=len(data))

@@ -6,13 +6,14 @@ from numpyro.infer import MCMC, NUTS
 
 import jax
 from .likelihood import StarccatoLVKLikelihood
-from starccato_jax.waveforms import StarccatoBlip
+from starccato_jax.waveforms import StarccatoBlip, StarccatoCCSNe
+
 
 def starccato_numpyro_model_with_jitter(
         likelihood: StarccatoLVKLikelihood,
         beta: float = 1.0,
-        time_jitter_std: float = 0.01,  # 10 ms jitter std
-        distance_prior_range: Tuple[float, float] = (50.0, 1000.0),  # Mpc
+        time_jitter_std: float = 0.005,  # 10 ms jitter std
+        distance_prior_range: Tuple[float, float] = (50.0, 1e25),  # Mpc
 ):
     """
     NumPyro model with time jitter and distance parameters.
@@ -30,29 +31,27 @@ def starccato_numpyro_model_with_jitter(
     theta = numpyro.sample("z", dist.Normal(0, 1).expand([dims]))
 
     # Sample time jitter (centered at 0, indicating no shift from trigger time)
-    time_shift = numpyro.sample("time_shift", dist.Normal(0, time_jitter_std))
+    # time_shift = numpyro.sample("time_shift", dist.Normal(0, time_jitter_std))
 
     # Sample distance with uniform prior
     distance = numpyro.sample("distance", dist.Uniform(
         distance_prior_range[0], distance_prior_range[1]
     ))
 
-    # Generate random key for starccato
-    rng = numpyro.prng_key()
-
+    model_rng = numpyro.prng_key()
     # Compute likelihood with time and distance parameters
     lnl = likelihood.log_likelihood(
-        theta, rng,
-        time_shift=time_shift,
+        theta, model_rng,
+        time_shift=0,
         distance=distance,
     )
 
     # Save untempered log-likelihood
-    numpyro.deterministic("untempered_loglike", lnl)
+    # numpyro.deterministic("untempered_loglike", lnl)
 
     # Save derived quantities for monitoring
-    numpyro.deterministic("time_shift_ms", time_shift * 1000)  # in milliseconds
-    numpyro.deterministic("distance_mpc", distance)
+    # numpyro.deterministic("time_shift_ms", time_shift * 1000)  # in milliseconds
+    # numpyro.deterministic("distance_mpc", distance)
 
     # Apply tempering
     numpyro.factor("likelihood", beta * lnl)
@@ -65,7 +64,7 @@ def run_sampler(
         num_warmup: int = 1000,
         num_samples: int = 1000,
         num_chains: int = 1,
-)-> MCMC:
+)-> Tuple[StarccatoLVKLikelihood, MCMC]:
     """
     Run MCMC sampling with NUTS kernel.
 
@@ -80,7 +79,7 @@ def run_sampler(
     likelihood = StarccatoLVKLikelihood.from_hdf5_files(
         strain_file=strain_file,
         psd_file=psd_file,
-        starccato_model=StarccatoBlip()
+        starccato_model=StarccatoCCSNe()
     )
 
     rng_key = jax.random.PRNGKey(rng_key)
@@ -89,4 +88,4 @@ def run_sampler(
     mcmc = MCMC(nuts_kernel, num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains)
     mcmc.run(rng_key, likelihood=likelihood, beta=1.0)
 
-    return mcmc
+    return likelihood, mcmc

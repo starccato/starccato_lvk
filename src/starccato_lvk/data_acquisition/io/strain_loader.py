@@ -21,10 +21,7 @@ def strain_loader(trigger_time: float, outdir: str = None, add_injection: bool =
     if add_injection:
         # 2. Create the CCSNe signal
         injection = np.array(StarccatoCCSNe().generate(rng=rng, n=1)[0], dtype=np.float64)
-        rel_distance = 100 # relative distance in Mpc
-        injection = injection / np.linalg.norm(injection)  # normalize the injection
-
-        injection = injection * 10e-20 # scale the injection to the desired distance
+        injection = injection * (100 / distance)  # scale to the desired distance
         data = _inject(data, injection, trigger_time)
 
     if outdir:
@@ -84,6 +81,8 @@ def load_strain_segment(gps_start: float, gps_end: float) -> TimeSeries:
 
 
 def _inject(data: TimeSeries, injection: np.ndarray, trigger_time: float) -> TimeSeries:
+
+    ## TODO: I THINK THIS IS Fed -- see the plot of the injection in the test_sampler.py -- doesnt match trigger time
     n_inj = len(injection)
     fs = data.sample_rate.value  # sampling frequency in Hz
     dt = 1 / fs  # time step between samples

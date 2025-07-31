@@ -26,7 +26,7 @@ def plot(data: TimeSeries, psd: FrequencySeries, event_time: float, fname: str, 
 
 
     # Plot the spectrogram
-    plot_psd_and_analysis_data(psd, data, ax1)
+    plot_psd_and_analysis_data(psd, data, injection, ax1)
     plot_analysis_timeseries(data, event_time, ax2, injection)
     plot_qtransform(data, event_time, ax3)
 
@@ -71,7 +71,7 @@ def plot_qtransform(ts: TimeSeries, event_time: float, axes=None):
         ax.grid(False)
 
 
-def plot_psd_and_analysis_data(psd: FrequencySeries, analysis_data: TimeSeries, ax):
+def plot_psd_and_analysis_data(psd: FrequencySeries, analysis_data: TimeSeries, injection, ax):
     """
     Plot PSD and analysis data around an event time.
 
@@ -81,14 +81,33 @@ def plot_psd_and_analysis_data(psd: FrequencySeries, analysis_data: TimeSeries, 
         event_time (float): Time of the event.
         axes (list): List of axes to plot on.
     """
-    signal_psd = analysis_data.psd()
+
+
+
+
+
+    analysis_psd = analysis_data.psd()
 
     ax.plot(psd, label="LIGO-Livingston", color="gwpy:ligo-livingston")
-    ax.plot(signal_psd, label="Analysis Data", color="tab:orange", alpha=0.3)
-    ax.set_xlim(16, 1600)
+    ax.plot(analysis_psd, label="Analysis Data", color="tab:orange", alpha=0.3)
+    if injection is not None:
+        injection_ts = TimeSeries(injection, sample_rate=analysis_data.sample_rate)
+        injection_psd = injection_ts.psd()
+        ax.plot(injection_psd, label="Injected Signal", color="tab:green", alpha=0.5)
 
-    # ax.set_ylim(1e-24**2, 1e-21**2)
-    ax.set_ylim(bottom=1e-24**2)
+
+    N_time = 512
+    N_freq = N_time // 2 + 1
+    freqs = np.fft.rfftfreq(N_time, d=1/analysis_data.sample_rate.value)
+    # psd interp
+    psd_interp = np.interp(freqs, psd.frequencies.value, psd.value, left=np.inf, right=np.inf)
+    ax.plot(freqs, psd_interp, label="PSD Analysis", color="k", alpha=0.5)
+
+
+    ax.set_xlim(100, 1600)
+
+    ax.set_ylim(1e-24**2, 1e-21**2)
+    # ax.set_ylim(bottom=1e-24**2)
     ax.set_yscale('log', base=10)
     ax.set_xscale('log', base=10)
     ax.set_ylabel(r"Strain PSD [1/Hz]")
@@ -114,7 +133,7 @@ def plot_analysis_timeseries(analysis_data: TimeSeries, event_time: float, ax, i
         # Plot the injection signal if provided
         ax2 = ax.twinx()
         inj_t = np.arange(-0.0625, 0.0625, 1/4096)  # assuming 4096 Hz sampling rate
-        ax2.plot(inj_t, injection, label="Injected Signal", color="tab:blue", alpha=0.5)
+        ax2.plot(inj_t, injection, label="Injected Signal", color="tab:green", alpha=0.5)
         ax2.grid(False)
 
     # tlim -- 512/2 samples at 4096 Hz is 0.125 seconds
