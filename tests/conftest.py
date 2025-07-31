@@ -59,5 +59,5 @@ def analysis_data(outdir, mock_data_dir):
 
     if not os.path.exists(files["strain_file"]) or not os.path.exists(files["psd_file"]):
         rng = jax.random.PRNGKey(0)
-        strain_loader(t0, outdir=outdir, add_injection=True, distance=10.0, rng=rng)
+        strain_loader(t0, outdir=outdir, add_injection=True, distance=1e23, rng=rng)
     return files

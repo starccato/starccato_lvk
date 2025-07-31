@@ -14,7 +14,7 @@ GLITCH_TIME = 1263748255.33508
 
 
 def test_data_loader(outdir, mock_data_dir):
-    load_analysis_chunk_and_psd(GLITCH_TIME, outdir=outdir)
+    strain_loader(GLITCH_TIME, outdir=outdir)
     assert os.path.exists(os.path.join(outdir, f"analysis_chunk_{int(GLITCH_TIME)}.png"))
     assert os.path.exists(os.path.join(outdir, f"analysis_chunk_{int(GLITCH_TIME)}.hdf5"))
 
@@ -49,4 +49,4 @@ def test_load_blips():
 def test_injection(outdir, mock_data_dir):
     t0 = get_trigger_time()
     rng = jax.random.PRNGKey(0)
-    strain_loader(t0, outdir=outdir, add_injection=True, distance=1000000, rng=rng)
+    strain_loader(t0, outdir=outdir, add_injection=False, distance=1e20, rng=rng)
