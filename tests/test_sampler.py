@@ -7,7 +7,11 @@ jax.config.update("jax_enable_x64", True)
 
 import arviz as az
 
-from starccato_lvk.sampler import run_sampler,StarccatoLVKLikelihood
+from starccato_lvk.data_acquisition.io.strain_loader import load_analysis_chunk_and_psd, strain_loader
+from starccato_lvk.data_acquisition.io.determine_valid_segments import load_state_vector, generate_times_for_valid_data, plot_valid_segments
+from conftest import get_trigger_time
+
+from starccato_lvk.likelihood import StarccatoLVKLikelihood, run_sampler, create_injection_params
 from starccato_lvk.likelihood import whiten
 import jax.numpy as jnp
 import numpy as np
@@ -110,53 +114,22 @@ def compute_snr(waveform: jnp.ndarray, likelihood) -> float:
     return jnp.sqrt(snr_squared)
 
 
-def summarize_posterior(posterior_samples: dict, likelihood=None, posterior_waveforms=None):
-    """Print summary statistics of posterior samples."""
-    print("Posterior Summary:")
-    print("=" * 50)
-
-    for param in ['distance', 'time_shift_ms']:
-        if param in posterior_samples:
-            samples = posterior_samples[param]
-            print(f"{param}:")
-            print(f"  Mean: {jnp.mean(samples):.3f}")
-            print(f"  Std:  {jnp.std(samples):.3f}")
-            print(f"  90% CI: [{jnp.percentile(samples, 5):.3f}, "
-                  f"{jnp.percentile(samples, 95):.3f}]")
-            print()
-
-    # # Check if samples are stuck (all identical)
-    # for param in ['distance', 'time_shift']:
-    #     if param in posterior_samples:
-    #         samples = posterior_samples[param]
-    #         if jnp.std(samples) < 1e-10:
-    #             print(f"⚠️  Warning: {param} samples appear stuck (std = {jnp.std(samples):.2e})")
-
-    print(f"Number of samples: {len(posterior_samples['z'])}")
-    print(f"Latent dimension: {posterior_samples['z'].shape[1]}")
-
-    # Compute SNRs if waveforms provided
-    if likelihood is not None and posterior_waveforms is not None:
-        print("\nSNR Analysis:")
-        print("-" * 20)
-
-        # Compute SNR for median prediction
-        median_waveform = jnp.median(posterior_waveforms, axis=0)
-        median_snr = compute_snr(median_waveform, likelihood)
-        print(f"Median prediction SNR: {median_snr:.2f}")
-
-        # Compute SNR distribution
-        snrs = [compute_snr(wf, likelihood) for wf in posterior_waveforms[:10]]  # Sample for speed
-        print(f"SNR range (10 samples): {jnp.min(jnp.array(snrs)):.2f} - {jnp.max(jnp.array(snrs)):.2f}")
-
 
 # Usage example for your specific code:
-def test_mcmc(outdir, analysis_data):
-    paths = analysis_data
-
+def test_mcmc(outdir, mock_data_dir):
+    outdir = os.path.join(outdir, "test_mcmc")
+    t0 = get_trigger_time()
+    rng = jax.random.PRNGKey(0)
+    strain_loader(t0, outdir=outdir)
+    paths = dict(
+        strain_file=f"{outdir}/analysis_chunk_{int(t0)}.hdf5",
+        psd_file=f"{outdir}/psd_{int(t0)}.hdf5",
+    )
+    params = create_injection_params(latent_dim=32)
     likelihood, mcmc = run_sampler(
         strain_file=paths["strain_file"],
         psd_file=paths["psd_file"],
+        injection_params=params,
         num_warmup=100  ,
         num_samples=100,
     )
@@ -167,23 +140,21 @@ def test_mcmc(outdir, analysis_data):
     posterior_predictions = likelihood.call_model(
         posterior_samples['z'],
         random.PRNGKey(0),
-        np.zeros_like(posterior_samples['z'][:, 0]),  # time_shift
-        posterior_samples['distance'][:, None],
+        posterior_samples['time_shift'][:, None],
+        posterior_samples['strain_amplitude'][:, None],
     )
 
 
-    # Print comprehensive summary
-    summarize_posterior(posterior_samples, likelihood, posterior_predictions)
 
     # Create plots
     print("Creating posterior prediction plots...")
-    fig1 = plot_posterior_predictions(
-        posterior_waveforms=posterior_predictions,
-        likelihood=likelihood,
-        plot_whitened=True,  # Include whitened comparison
-        n_plot_samples=50
-    )
-    fig1.savefig(os.path.join(outdir, "posterior_predictions_comprehensive.png"), dpi=150)
+    # fig1 = plot_posterior_predictions(
+    #     posterior_waveforms=posterior_predictions,
+    #     likelihood=likelihood,
+    #     plot_whitened=True,  # Include whitened comparison
+    #     n_plot_samples=50
+    # )
+    # fig1.savefig(os.path.join(outdir, "posterior_predictions_comprehensive.png"), dpi=150)
 
 
     inference_obj = az.from_numpyro(mcmc)

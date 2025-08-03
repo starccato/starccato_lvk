@@ -49,4 +49,4 @@ def test_load_blips():
 def test_injection(outdir, mock_data_dir):
     t0 = get_trigger_time()
     rng = jax.random.PRNGKey(0)
-    strain_loader(t0, outdir=outdir, add_injection=False, distance=1e20, rng=rng)
+    strain_loader(t0, outdir=outdir, add_injection=True, distance=1e20, rng=rng)
