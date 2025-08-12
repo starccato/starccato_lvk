@@ -5,6 +5,7 @@ import arviz as az
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
+import numpy as np
 import numpyro
 import numpyro.distributions as dist
 from gwpy.frequencyseries import FrequencySeries
@@ -12,17 +13,19 @@ from gwpy.timeseries import TimeSeries
 from jax import random
 from numpyro.infer import MCMC, NUTS
 from pycbc import noise, psd
-import numpy as np
 
 from starccato_jax.waveforms import StarccatoCCSNe
 from starccato_jax.waveforms import StarccatoVAE
+# turn grid off
+plt.rcParams['grid.linestyle'] = 'None'
 
 jax.config.update("jax_enable_x64", True)
 
 FS = 4096.0  # Sample rate in Hz
 N = 512
 T = N / FS  # Duration in seconds
-DEFAULT_STRAIN_AMPLITUDE = 1e-22  # Default strain amplitude for injections
+DEFAULT_STRAIN_AMPLITUDE = 1  # Default strain amplitude for injections
+
 
 class StarccatoLVKLikelihood:
     """
@@ -51,7 +54,7 @@ class StarccatoLVKLikelihood:
         self.starccato_model = starccato_model
 
         # Store original noise data
-        self.noise_data = strain_data.copy()
+        self.noise_data = np.array(strain_data)
 
         self.time_array = time_array
         self.psd_freq = psd_freq
@@ -78,7 +81,7 @@ class StarccatoLVKLikelihood:
             psd_values
         )
 
-        # Critical fix: Only use frequencies where we have valid PSD data
+        # Only use frequencies where we have valid PSD data
         valid_psd_mask = (self.freq_array >= psd_freq.min()) & (self.freq_array <= psd_freq.max())
         self.freq_mask = self.freq_mask & valid_psd_mask
 
@@ -101,6 +104,7 @@ class StarccatoLVKLikelihood:
             self.strain_data = strain_data + injection_signal
 
         self.data_fft = jnp.fft.rfft(self.strain_data)
+        self.noise_fft = jnp.fft.rfft(self.noise_data)
         # Print some diagnostics
         injection_str = ""
         if injection_params is not None:
@@ -159,7 +163,8 @@ class StarccatoLVKLikelihood:
         flow = 20.0  # low-frequency cutoff (Hz)
         flen = 4096  # length of PSD array
         psd_series = psd.aLIGOAPlusDesignSensitivityT1800042(flen, delta_f, flow)
-        ts = noise.noise_from_psd(4 * N, delta_t, psd_series, seed=0)
+        psd_series = psd.flat_unity(flen, delta_f, flow)
+        ts = noise.noise_from_psd(4 * N, delta_t, psd_series, seed=0) * 1e-5 # really low noise level
         strain_data = ts.data[:N]  # take first N samples
         time_array = ts.sample_times.numpy()[:N]
         return cls(
@@ -179,15 +184,20 @@ class StarccatoLVKLikelihood:
         ax[0].set_xlabel('Time (s)')
         ax[0].set_ylabel('Strain')
         # ax[1].loglog(self.psd_freq, self.psd_values, label='PSD', color='blue')
-        ax[1].loglog(self.freq_array[self.freq_mask], self.psd_interp[self.freq_mask], label='Interpolated PSD',)
+        ax[1].loglog(self.freq_array[self.freq_mask], self.psd_interp[self.freq_mask], label='Interpolated PSD', )
         ax[1].loglog(self.freq_array[self.freq_mask], jnp.abs(self.data_fft[self.freq_mask]) ** 2, label='Data FFT',
                      color='black')
+
         ax[1].set_xlabel('Frequency (Hz)')
         ax[1].set_ylabel('Strain PSD')
         if self.injection_params is not None:
             ax[0].plot(self.time_array, self.injection, label='Injection', color='red', alpha=0.5)
+            ax[0].plot(self.time_array, self.noise_data, label='Noise', color='green', alpha=0.5)
+
             ax[1].loglog(self.freq_array[self.freq_mask], jnp.abs(self.injection_fft[self.freq_mask]) ** 2,
                          label='Injection FFT', color='red', alpha=0.5)
+            ax[1].loglog(self.freq_array[self.freq_mask], jnp.abs(self.noise_fft[self.freq_mask]) ** 2,
+                         label='Noise FFT', color='green', alpha=0.5)
         plt.tight_layout()
         plt.savefig('strain_and_psd.png', dpi=150)
 
@@ -232,27 +242,14 @@ class StarccatoLVKLikelihood:
         residual_band = residual[self.freq_mask]
         psd_band = self.psd_interp[self.freq_mask]
 
-        # Double-check for finite values
-        valid_indices = jnp.isfinite(residual_band) & jnp.isfinite(psd_band) & (psd_band > 0)
-
-        if jnp.sum(valid_indices) == 0:
-            return -jnp.inf
-
-        residual_valid = residual_band[valid_indices]
-        psd_valid = psd_band[valid_indices]
-
         # Compute inner product: (r|r) = 4 * Re[∫ r*(f) r(f) / S_n(f) df]
         # Note: for real signals, we can use the full spectrum including negative frequencies
         # The factor of 4 accounts for this (2 for positive freqs, 2 for the real part)
-        inner_product_integrand = jnp.conj(residual_valid) * residual_valid / psd_valid
+        inner_product_integrand = jnp.conj(residual_band) * residual_band / psd_band
         inner_product = 4.0 * jnp.real(jnp.sum(inner_product_integrand)) * self.df
 
         # The log likelihood is -0.5 * (d-h|d-h)
         log_likelihood = -0.5 * inner_product
-
-        # Safeguard against numerical issues
-        if not jnp.isfinite(log_likelihood):
-            return -jnp.inf
 
         return log_likelihood
 
@@ -263,10 +260,15 @@ class StarccatoLVKLikelihood:
                    strain_amplitude: float = DEFAULT_STRAIN_AMPLITUDE,
                    ) -> jnp.ndarray:
         y_model = self.starccato_model.generate(z=theta, rng=rng)
-        y_fft = jnp.fft.rfft(y_model)
-        phase_shift = -2j * jnp.pi * self.freq_array * time_shift
-        shifted_fft = y_fft * jnp.exp(phase_shift)
-        y_model = jnp.fft.irfft(shifted_fft, n=len(y_model))
+        # normalize the model output to have unit amplitude
+        raw_snr = self.get_snr(y_model)
+        # normalize so the model has unit matched-filter norm
+        y_model = jnp.where(raw_snr > 0, y_model / (raw_snr + 1e-30), y_model)
+
+        # y_fft = jnp.fft.rfft(y_model)
+        # phase_shift = -2j * jnp.pi * self.freq_array * time_shift
+        # shifted_fft = y_fft * jnp.exp(phase_shift)
+        # y_model = jnp.fft.irfft(shifted_fft, n=len(y_model))
         return y_model * strain_amplitude
 
     def log_likelihood(
@@ -277,13 +279,8 @@ class StarccatoLVKLikelihood:
             strain_amplitude: float = DEFAULT_STRAIN_AMPLITUDE,
     ) -> float:
         """Compute log likelihood with explicit strain amplitude scaling."""
-        try:
-            # Generate base model (unitless, O(1))
-            y_model = self.call_model(theta, rng, time_shift, strain_amplitude)
-            return self.frequency_domain_log_likelihood(y_model)
-        except Exception as e:
-            print(f"Error in likelihood computation: {e}")
-            return -jnp.inf
+        y_model = self.call_model(theta, rng, time_shift, strain_amplitude)
+        return self.frequency_domain_log_likelihood(y_model)
 
     def get_snr(self, signal: jnp.ndarray) -> float:
         """Calculate matched-filter SNR of a signal given the PSD."""
@@ -308,7 +305,7 @@ class StarccatoLVKLikelihood:
     def _test_lnl(self):
         rng_test = jax.random.PRNGKey(42)
         test_theta = jax.random.normal(rng_test, (self.starccato_model.latent_dim,))
-        test_lnl = self.log_likelihood(test_theta, rng_test, 0.0, 1e-21)
+        test_lnl = self.log_likelihood(test_theta, rng_test, 0.0, DEFAULT_STRAIN_AMPLITUDE)
         print(f"Test log likelihood: {test_lnl}")
         if not jnp.isfinite(test_lnl):
             raise ValueError("Likelihood function returns non-finite values!")
@@ -318,7 +315,8 @@ class StarccatoLVKLikelihood:
 
         lnl_at_injection = self.log_likelihood(self.injection_params['z'], jax.random.PRNGKey(0),
                                                time_shift=self.injection_params.get('time_shift', 0.0),
-                                               strain_amplitude=self.injection_params.get('strain_amplitude', 1e-22))
+                                               strain_amplitude=self.injection_params.get('strain_amplitude',
+                                                                                          DEFAULT_STRAIN_AMPLITUDE))
         print("lnL at injected z:", lnl_at_injection)
 
         # 1: shapes & finiteness
@@ -367,7 +365,10 @@ def starccato_numpyro_model_with_jitter(
     dims = likelihood.starccato_model.latent_dim
 
     # Standard normal prior for latent variables (as intended by the VAE training)
-    theta = numpyro.sample("z", dist.Normal(0, 1).expand([dims]))
+    # z params with plate
+    theta = numpyro.sample(
+        "z", dist.Normal(0, 1).expand([dims])
+    )
 
     ## TESTING: fix time-shift, and strain amplitude as fixed parameters
 
@@ -386,7 +387,6 @@ def starccato_numpyro_model_with_jitter(
     time_shift = jnp.array(0.0)  # Fixed time shift for now
     numpyro.deterministic("strain_amplitude", strain_amplitude)
     numpyro.deterministic("time_shift", time_shift)
-
 
     # Generate fresh RNG key
     model_rng = numpyro.prng_key()
@@ -421,6 +421,18 @@ def run_sampler(
 
     rng_key = jax.random.PRNGKey(rng_key)
 
+    # init vals
+    # Use the injection parameters if available, otherwise use zeros
+    if likelihood.injection_params is not None:
+        init_vals = likelihood.injection_params
+        init_strat = numpyro.infer.init_to_value(
+            values={
+                "z": init_vals['z'],
+                "time_shift": init_vals.get('time_shift', 0.0),
+                "strain_amplitude": init_vals.get('strain_amplitude', DEFAULT_STRAIN_AMPLITUDE),
+            },
+        )
+
     # Configure NUTS with conservative settings
     nuts_kernel = NUTS(
         starccato_numpyro_model_with_jitter,
@@ -429,8 +441,8 @@ def run_sampler(
         step_size=step_size,
         adapt_step_size=True,
         adapt_mass_matrix=True,
-        dense_mass=False,  # Use diagonal mass matrix for high-dimensional problems
-        init_strategy=numpyro.infer.init_to_sample,  # Random initialization
+        dense_mass=True,  # Use diagonal mass matrix for high-dimensional problems
+        init_strategy=init_strat if likelihood.injection_params is not None else numpyro.infer.init_to_sample,
     )
 
     mcmc = MCMC(
@@ -500,12 +512,58 @@ if __name__ == '__main__':
         )
     )
 
+    print("=== TYPES & SHAPES ===")
+    print("strain_data type:", type(likelihood.strain_data), "->", getattr(likelihood, "strain_data").shape)
+    print("psd_interp type:", type(likelihood.psd_interp), "->", likelihood.psd_interp.shape)
+    print("freq_array type:", type(likelihood.freq_array), "->", likelihood.freq_array.shape)
+    print("data_fft type:", type(likelihood.data_fft), "->", likelihood.data_fft.shape)
+
+    print("\n=== MASK & PSD ===")
+    print("freq_mask bins:", int(jnp.sum(likelihood.freq_mask)))
+    psd_in = likelihood.psd_interp[likelihood.freq_mask]
+    print("psd_inband min/max/mean:", float(jnp.min(psd_in)), float(jnp.max(psd_in)), float(jnp.mean(psd_in)))
+    print("any nonfinite psd?", bool(jnp.any(~jnp.isfinite(psd_in))))
+
+    print("\n=== DATA POWER ===")
+    data_power = (jnp.abs(likelihood.data_fft) ** 2)[likelihood.freq_mask]
+    print("data_power in band min/max/mean:", float(jnp.min(data_power)), float(jnp.max(data_power)),
+          float(jnp.mean(data_power)))
+
+    print("\n=== MODEL SCALE ===")
+    z0 = jnp.zeros(likelihood.starccato_model.latent_dim)
+    y_unit = likelihood.call_model(z0, jax.random.PRNGKey(0), time_shift=0.0, strain_amplitude=1.0)
+    print("y_unit dtype:", type(y_unit), "shape:", y_unit.shape)
+    print("y_unit min/max/std:", float(jnp.min(y_unit)), float(jnp.max(y_unit)), float(jnp.std(y_unit)))
+    print("model SNR (unit amplitude):", float(likelihood.get_snr(y_unit)))
+
+    print("\n=== INNER PRODUCTS ===")
+    psd_floor = jnp.maximum(psd_in, 1e-30)
+    inner_dd = 4.0 * jnp.real(
+        jnp.sum((jnp.abs(likelihood.data_fft[likelihood.freq_mask]) ** 2) / psd_floor)) * likelihood.df
+    print("(d|d):", float(inner_dd), "=> -0.5*(d|d):", float(-0.5 * inner_dd))
+    if likelihood.injection is not None and jnp.any(likelihood.injection != 0):
+        print("injection SNR:", float(likelihood.injection_snr))
+
+    psd_in = likelihood.psd_interp[likelihood.freq_mask]
+    print("psd in-band min/mean/max:", float(jnp.min(psd_in)), float(jnp.mean(psd_in)), float(jnp.max(psd_in)))
+
+    z0 = jnp.zeros(likelihood.starccato_model.latent_dim)
+    y_unit = likelihood.call_model(z0, jax.random.PRNGKey(0), time_shift=0.0, strain_amplitude=1.0)
+    print("model unit SNR:", float(likelihood.get_snr(y_unit)))
+
+    data_power = (jnp.abs(likelihood.data_fft) ** 2)[likelihood.freq_mask]
+    inner_dd = 4.0 * jnp.real(jnp.sum(data_power / jnp.maximum(psd_in, 1e-30))) * likelihood.df
+    print("(d|d):", float(inner_dd), " => -0.5*(d|d):", float(-0.5 * inner_dd))
+    print("injection SNR:", float(likelihood.injection_snr))
+
+    #
+    #
     mcmc = run_sampler(
         likelihood=likelihood,
         rng_key=42,
         num_warmup=1000,
         num_samples=1000,
-        num_chains=4
+        num_chains=1
     )
 
     plot_mcmc_results(likelihood, mcmc)
