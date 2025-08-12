@@ -178,7 +178,8 @@ class StarccatoLVKLikelihood:
         ax[0].plot(self.time_array, self.strain_data, label='Strain Data', color='black')
         ax[0].set_xlabel('Time (s)')
         ax[0].set_ylabel('Strain')
-        ax[1].loglog(self.psd_freq, self.psd_values, label='PSD', color='blue')
+        # ax[1].loglog(self.psd_freq, self.psd_values, label='PSD', color='blue')
+        ax[1].loglog(self.freq_array[self.freq_mask], self.psd_interp[self.freq_mask], label='Interpolated PSD',)
         ax[1].loglog(self.freq_array[self.freq_mask], jnp.abs(self.data_fft[self.freq_mask]) ** 2, label='Data FFT',
                      color='black')
         ax[1].set_xlabel('Frequency (Hz)')
@@ -315,6 +316,48 @@ class StarccatoLVKLikelihood:
         if test_lnl < -1e10:
             print("WARNING: Very negative likelihood - check data scaling and PSD")
 
+        lnl_at_injection = self.log_likelihood(self.injection_params['z'], jax.random.PRNGKey(0),
+                                               time_shift=self.injection_params.get('time_shift', 0.0),
+                                               strain_amplitude=self.injection_params.get('strain_amplitude', 1e-22))
+        print("lnL at injected z:", lnl_at_injection)
+
+        # 1: shapes & finiteness
+        print("freq_array shape:", self.freq_array.shape)
+        print("psd_freq shape:", self.psd_freq.shape, "psd_values shape:", self.psd_values.shape)
+        psd_intrp = self.psd_interp[self.freq_mask]
+        print("psd_interp shape:", self.psd_interp.shape,
+              "min/max/mean/std:", jnp.nanmin(psd_intrp), jnp.nanmax(psd_intrp),
+              jnp.nanmean(psd_intrp), jnp.nanstd(psd_intrp))
+        print("freq_mask sum:", int(jnp.sum(self.freq_mask)), "any finite psd_interp in mask:",
+              int(jnp.sum(jnp.isfinite(self.psd_interp[self.freq_mask]))))
+
+        # 2: data fft stats
+        data_fft = self.data_fft
+        print("data_fft shape:", data_fft.shape, "min/max/mean/std (abs^2):",
+              float(jnp.min(jnp.abs(data_fft) ** 2)), float(jnp.max(jnp.abs(data_fft) ** 2)),
+              float(jnp.mean(jnp.abs(data_fft) ** 2)), float(jnp.std(jnp.abs(data_fft) ** 2)))
+
+        # 3: a few PSD values in band and a few freqs
+        freqs = self.freq_array[self.freq_mask]
+        psd_inband = self.psd_interp[self.freq_mask]
+        print("first 10 freqs in band:", freqs[:10])
+        print("first 10 psd_inband:", psd_inband[:10])
+
+        # 4: count NaN/Inf
+        print("psd nan/inf count:", int(jnp.sum(~jnp.isfinite(psd_intrp))))
+        print("data nan/inf count:", int(jnp.sum(~jnp.isfinite(self.data_fft))))
+
+        # 5: model output scale check (unit latent)
+        z0 = jnp.zeros(self.starccato_model.latent_dim)
+        y_model = self.call_model(z0, jax.random.PRNGKey(0), time_shift=0.0, strain_amplitude=1.0)
+        print("model y stats: len, min, max, mean, std, max(abs):",
+              y_model.shape, float(jnp.min(y_model)), float(jnp.max(y_model)),
+              float(jnp.mean(y_model)), float(jnp.std(y_model)), float(jnp.max(jnp.abs(y_model))))
+
+        # 6: model SNR when amplitude=1
+        model_snr = float(self.get_snr(y_model))
+        print("model SNR (unit amplitude):", model_snr)
+
 
 def starccato_numpyro_model_with_jitter(
         likelihood: StarccatoLVKLikelihood,
@@ -326,16 +369,24 @@ def starccato_numpyro_model_with_jitter(
     # Standard normal prior for latent variables (as intended by the VAE training)
     theta = numpyro.sample("z", dist.Normal(0, 1).expand([dims]))
 
-    # Small time shift - should be much smaller than signal duration
-    time_shift = numpyro.sample("time_shift", dist.Normal(0, time_jitter_std))
+    ## TESTING: fix time-shift, and strain amplitude as fixed parameters
 
-    # Add strain amplitude as a free parameter to account for unknown scaling
-    log_strain_amp = numpyro.sample("log_strain_amplitude", dist.Uniform(
-        jnp.log(strain_amplitude_prior[0]),
-        jnp.log(strain_amplitude_prior[1])
-    ))
-    strain_amplitude = jnp.exp(log_strain_amp)
+    # # Small time shift - should be much smaller than signal duration
+    # time_shift = numpyro.sample("time_shift", dist.Normal(0, time_jitter_std))
+    #
+    # # Add strain amplitude as a free parameter to account for unknown scaling
+    # log_strain_amp = numpyro.sample("log_strain_amplitude", dist.Uniform(
+    #     jnp.log(strain_amplitude_prior[0]),
+    #     jnp.log(strain_amplitude_prior[1])
+    # ))
+    # strain_amplitude = jnp.exp(log_strain_amp)
+    # numpyro.deterministic("strain_amplitude", strain_amplitude)
+
+    strain_amplitude = jnp.array(DEFAULT_STRAIN_AMPLITUDE)
+    time_shift = jnp.array(0.0)  # Fixed time shift for now
     numpyro.deterministic("strain_amplitude", strain_amplitude)
+    numpyro.deterministic("time_shift", time_shift)
+
 
     # Generate fresh RNG key
     model_rng = numpyro.prng_key()
