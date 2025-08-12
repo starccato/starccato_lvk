@@ -22,7 +22,7 @@ jax.config.update("jax_enable_x64", True)
 FS = 4096.0  # Sample rate in Hz
 N = 512
 T = N / FS  # Duration in seconds
-
+DEFAULT_STRAIN_AMPLITUDE = 1e-22  # Default strain amplitude for injections
 
 class StarccatoLVKLikelihood:
     """
@@ -158,7 +158,7 @@ class StarccatoLVKLikelihood:
         delta_f = 1.0 / T  # frequency resolution for PSD
         flow = 20.0  # low-frequency cutoff (Hz)
         flen = 4096  # length of PSD array
-        psd_series = psd.aLIGOZeroDetHighPower(flen, delta_f, flow)
+        psd_series = psd.aLIGOAPlusDesignSensitivityT1800042(flen, delta_f, flow)
         ts = noise.noise_from_psd(4 * N, delta_t, psd_series, seed=0)
         strain_data = ts.data[:N]  # take first N samples
         time_array = ts.sample_times.numpy()[:N]
@@ -194,7 +194,7 @@ class StarccatoLVKLikelihood:
         # Extract parameters with defaults
         z = injection_params['z']
         time_shift = injection_params.get('time_shift', 0.0)
-        amplitude = injection_params.get('strain_amplitude', 1e-21)
+        amplitude = injection_params.get('strain_amplitude', DEFAULT_STRAIN_AMPLITUDE)
         rng_seed = injection_params.get('rng_seed', 42)
 
         # Validate latent variables
@@ -259,7 +259,7 @@ class StarccatoLVKLikelihood:
                    theta: jnp.ndarray,
                    rng: random.PRNGKey,
                    time_shift: float = 0.0,
-                   strain_amplitude: float = 1e-21,
+                   strain_amplitude: float = DEFAULT_STRAIN_AMPLITUDE,
                    ) -> jnp.ndarray:
         y_model = self.starccato_model.generate(z=theta, rng=rng)
         y_fft = jnp.fft.rfft(y_model)
@@ -273,7 +273,7 @@ class StarccatoLVKLikelihood:
             theta: jnp.ndarray,
             rng: random.PRNGKey,
             time_shift: float = 0.0,
-            strain_amplitude: float = 1e-21,
+            strain_amplitude: float = DEFAULT_STRAIN_AMPLITUDE,
     ) -> float:
         """Compute log likelihood with explicit strain amplitude scaling."""
         try:
@@ -417,8 +417,8 @@ def plot_mcmc_results(likelihood, mcmc, outdir='mcmc_results'):
             axes[i, 1].axhline(true_params[var], color="red", ls="--")
         else:
             for j, val in enumerate(np.atleast_1d(true_params[var])):
-                axes[i, 0].avhline(val, color="red", ls="--", label="True value")
-                axes[i, 1].ahvline(val, color="red", ls="--")
+                axes[i, 0].axvline(val, color="red", ls="--", label="True value")
+                axes[i, 1].axhline(val, color="red", ls="--")
     plt.tight_layout()
     plt.savefig(f'{outdir}/trace_plot.png', dpi=150)
 
@@ -445,7 +445,7 @@ if __name__ == '__main__':
         injection_params=dict(
             z=jax.random.normal(random.PRNGKey(0), (model.latent_dim,)),
             time_shift=0.0,
-            strain_amplitude=1e-22,
+            strain_amplitude=DEFAULT_STRAIN_AMPLITUDE,
         )
     )
 
