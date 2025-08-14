@@ -1,7 +1,4 @@
 import os
-from typing import Tuple, Optional
-
-import arviz as az
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
@@ -10,351 +7,256 @@ import numpyro
 import numpyro.distributions as dist
 from jax import random
 from numpyro.infer import MCMC, NUTS
-from pycbc import noise, psd
+
 from starccato_jax.waveforms import StarccatoCCSNe
+import arviz as az
 
-plt.rcParams['grid.linestyle'] = 'None'
+jax.config.update("jax_enable_x64", True)  # Enable float64 precision for JAX
 
-FS = 4096.0  # Sample rate in Hz
-N = 512
-T = N / FS  # Duration in seconds
-DEFAULT_AMPL = 200
-N_BURNIN = 100
-N_STEPS = 100
-OUTDIR = "mcmc_results"
-os.makedirs(OUTDIR, exist_ok=True)
+# Constants
+FS, N, T = 4096.0, 512, 512 / 4096.0
+DT = 1.0 / FS
+DF = 1.0 / T  # Frequency resolution
+PSD_N = 4096
+TIMES = jnp.arange(0, T, DT)[:N]
+FREQS = jnp.fft.rfftfreq(N, d=DT)
+FLOW = 100.0
+FMASK = (FREQS >= FLOW) & (FREQS <= 2048)
+DEFAULT_AMPL = 1e-22  # Default amplitude for the waveform
+N_BURNIN, N_STEPS = 100, 100
 
 
-class StarccatoLVKLikelihood:
-    """
-    LVK likelihood using starccato_jax latent variable model with proper normalization.
-    """
+class AnalysisObj:
+    def __init__(self, noise: jnp.ndarray, psd: jnp.ndarray, z_injection: jnp.ndarray, outdir: str = 'results'):
+        os.makedirs(outdir, exist_ok=True)
+        self.outdir = outdir
+        self.noise = noise
+        self.psd = psd
+        self.model = StarccatoCCSNe()
 
-    def __init__(
-            self,
-            strain_data: jnp.ndarray,
-            time_array: jnp.ndarray,
-            psd_freq: jnp.ndarray,
-            psd_values: jnp.ndarray,
-            starccato_model: StarccatoCCSNe,
-            injection_params: dict,
-            freq_range: Tuple[float, float] = (100.0, 2048.0),
-    ):
-        self.starccato_model = starccato_model
+        self.z_injection = z_injection
+        self.injection = self.model.generate(z_injection, jax.random.PRNGKey(0)) * DEFAULT_AMPL
+        self.data = self.noise + self.injection
 
-        # Store original noise data
-        self.noise_data = np.array(strain_data)
+        # freq series
+        self.noise_fft = jnp.fft.rfft(self.noise)
+        self.data_fft = jnp.fft.rfft(self.data)
+        self.injection_fft = jnp.fft.rfft(self.injection)
+        self.injection_snr = self._compute_snr(self.injection_fft)
+        print(f"Injection SNR: {self.injection_snr:.2f}")
 
-        self.time_array = time_array
-        self.psd_freq = psd_freq
-        self.psd_values = psd_values
+        # Compute likelihood at injection point for debugging
+        inj_loglike = self.log_likelihood(z_injection, jax.random.PRNGKey(0))
+        print(f"Log-likelihood at injection: {inj_loglike:.2f}")
 
-        # Validate inputs
-        if len(strain_data) != 512:
-            raise ValueError(f"Strain data must have exactly 512 samples. Current: {len(strain_data)}")
-
-        self.dt = time_array[1] - time_array[0]
-        self.duration = len(time_array) * self.dt
-        self.sample_rate = 1.0 / self.dt
-
-        self.df = 1.0 / self.duration
-        self.freq_array = jnp.fft.rfftfreq(len(time_array), self.dt)
-        self.freq_mask = (self.freq_array >= freq_range[0]) & (self.freq_array <= freq_range[1])
-
-        # Ensure PSD interpolation is stable
-        self.psd_interp = jnp.interp(self.freq_array, psd_freq, psd_values)
-
-        # Only use frequencies where we have valid PSD data
-        valid_psd_mask = (self.freq_array >= psd_freq.min()) & (self.freq_array <= psd_freq.max())
-        self.freq_mask = self.freq_mask & valid_psd_mask
-        # Generate and add injection if parameters provided
-        self.injection_params = injection_params
-        self.injection = jnp.zeros_like(strain_data)
-        self.strain_data = strain_data
-
-        print("Generating injection signal using Starccato model...")
-        injection_signal = self.call_model(injection_params['z'], jax.random.PRNGKey(0))
-        self.injection = injection_signal
-        self.injection_fft = jnp.fft.rfft(injection_signal)
-        self.strain_data = strain_data + injection_signal
-
-        self.data_fft = jnp.fft.rfft(self.strain_data)
-        self.noise_fft = jnp.fft.rfft(self.noise_data)
-
-        # Print diagnostics
-        injection_str = f" (with injection: SNR={self.get_snr(self.injection):.2f})"
-
-        print(f"Frequency range: {freq_range[0]:.1f} - {freq_range[1]:.1f} Hz")
-        print(f"Analysis frequencies: {jnp.sum(self.freq_mask)} bins")
-        print(f"Data loaded{injection_str}")
-        self.plot()
-        self._test_lnl()
+        self.plot()[0].savefig(f"{outdir}/injection_signal.png", dpi=150)
 
     @classmethod
-    def from_simulated_noise(
-            cls,
-            starccato_model: StarccatoCCSNe,
-            injection_params: Optional[dict] = None,
-            noise_level: float = 1e-5,
-            use_flat_psd: bool = False,
-            **kwargs
-    ):
-        delta_t = 1.0 / FS
-        delta_f = 1.0 / T
-        flow = 20.0
-        flen = 4096
-        if use_flat_psd:
-            psd_series = psd.flat_unity(flen, delta_f, flow)
-        else:
-            psd_series = psd.aLIGOAPlusDesignSensitivityT1800042(flen, delta_f, flow)
+    def from_simulated_noise(cls, z_injection: jnp.ndarray, outdir: str = 'results'):
+        from pycbc import noise as pycbc_noise
+        from pycbc import psd as pycbc_psd
+        psd_series = pycbc_psd.aLIGOAPlusDesignSensitivityT1800042(PSD_N, DF, FLOW)
+        ts = pycbc_noise.noise_from_psd(10 * N, DT, psd_series, seed=0)
+        psd = jnp.interp(
+            FREQS,
+            xp=psd_series.sample_frequencies.numpy(),
+            fp=psd_series.data
+        ) * (FS * N / 2.0)  # Scale PSD to match FFT normalization
+        noise = np.array(ts.data[:N])  # Use first N samples of noise
+        return cls(noise, psd, z_injection, outdir)
 
-        ts = noise.noise_from_psd(10 * N, delta_t, psd_series, seed=0) * noise_level
-        strain_data = ts.data[:N]
-        time_array = ts.sample_times.numpy()[:N]
+    def _compute_snr(self, signal_fft):
+        num = inner_product(signal_fft, self.data_fft, self.psd)  # <H|D>
+        den = inner_product(signal_fft, signal_fft, self.psd)  # <H|H>
+        return float(num / jnp.sqrt(den))
 
-        return cls(
-            strain_data=strain_data,
-            time_array=time_array,
-            psd_freq=psd_series.sample_frequencies.numpy(),
-            psd_values=psd_series.data,
-            starccato_model=starccato_model,
-            injection_params=injection_params,
-            **kwargs
-        )
+    def log_likelihood(self, z, rng_key):
+        return log_likelihood(self.data_fft, self.psd, self.model, z, rng_key)
 
-    def call_model(self, theta: jnp.ndarray, rng: random.PRNGKey, ) -> jnp.ndarray:
-        return self.starccato_model.generate(z=theta, rng=rng) * DEFAULT_AMPL
-
-    def log_likelihood(
-            self,
-            theta: jnp.ndarray,
-            rng: random.PRNGKey,
-    ) -> float:
-        """Compute log likelihood in frequency domain."""
-        y_model = self.call_model(theta, rng)
-
-        model_fft = jnp.fft.rfft(y_model)
-        residual = self.data_fft - model_fft
-
-        # Only use frequencies in our analysis band
-        residual_band = residual[self.freq_mask]
-        psd_band = self.psd_interp[self.freq_mask]
-
-        # Compute inner product with numerical stability
-        eps = 1e-50  # Small epsilon to avoid division by zero
-        safe_psd = jnp.maximum(psd_band, eps)
-
-        # Standard GW likelihood: -0.5 * (d-h|d-h)
-        # where (a|b) = 4 * Re[∫ a* b / S_n df]
-        inner_product = jnp.sum(jnp.abs(residual_band) ** 2 / safe_psd)
-        log_likelihood = -2.0 * self.df * inner_product
-
-        return log_likelihood
-
-    def get_snr(self, signal: jnp.ndarray) -> float:
-        """Calculate matched-filter SNR of a signal."""
-        signal_fft = jnp.fft.rfft(signal)
-        band = self.freq_mask
-        psd = jnp.maximum(self.psd_interp[band], 1e-50)
-        df = self.df
-
-        # Matched filter numerator: 4 * Re[sum(data* conj(signal) / psd)] * df
-        num = 4.0 * jnp.real(jnp.sum(self.data_fft[band] * jnp.conj(signal_fft[band]) / psd)) * df
-        # Signal norm: 4 * sum(|signal|^2 / psd) * df
-        denom = 4.0 * jnp.sum(jnp.abs(signal_fft[band]) ** 2 / psd) * df
-        return float(num / jnp.sqrt(denom))
-
-    def _test_lnl(self):
-        """Test likelihood computation."""
-        rng_test = jax.random.PRNGKey(42)
-
-        # Test with random z
-        test_theta = jax.random.normal(rng_test, (self.starccato_model.latent_dim,))
-        test_lnl = self.log_likelihood(test_theta, rng_test)
-        print(f"Test log likelihood (random z): {test_lnl:.2f}")
-
-        if not jnp.isfinite(test_lnl):
-            raise ValueError("Likelihood function returns non-finite values!")
-
-        # Test at injection if available
-        if self.injection_params is not None:
-            lnl_at_injection = self.log_likelihood(
-                self.injection_params['z'],
-                jax.random.PRNGKey(0),
-            )
-            print(f"Log likelihood at injection: {lnl_at_injection:.2f}")
-
-            # Also test with slightly perturbed z
-            perturbed_z = self.injection_params['z'] + 0.1 * jax.random.normal(rng_test,
-                                                                               (self.starccato_model.latent_dim,))
-            lnl_perturbed = self.log_likelihood(
-                perturbed_z,
-                rng_test,
-            )
-            print(f"Log likelihood at perturbed injection: {lnl_perturbed:.2f}")
-
-            if lnl_at_injection < lnl_perturbed:
-                print("WARNING: Injection is not at likelihood maximum!")
+    def log_likelihood_td(self, noise_sigma, z, rng_key):
+        return log_likelihood_td(noise_sigma, self.data_fft, self.psd, self.model, z, rng_key)
 
     def plot(self):
-        """Plot strain and PSD."""
-        fig, ax = plt.subplots(2, 1, figsize=(12, 8))
-        # Plot strain data
-
-        PDGRM_FACTOR = 2.0 / (FS * N)  # Power spectral density normalization factor
-
-        # Masked frequency array for plotting
-        ax[0].plot(self.time_array, self.strain_data, label='Strain Data', color='black', alpha=0.7)
-        ax[0].set_xlabel('Time (s)')
-        ax[0].set_ylabel('Strain')
-
-        ax[1].loglog(self.freq_array[self.freq_mask], self.psd_interp[self.freq_mask],
-                     label='PSD', color='blue', alpha=0.7)
-
-        ax[1].loglog(self.freq_array[self.freq_mask], PDGRM_FACTOR * jnp.abs(self.data_fft[self.freq_mask]) ** 2,
-                     label='Data Power', color='black', alpha=0.5)
-
-        if self.injection_params is not None:
-            ax[0].plot(self.time_array, self.injection, label='Injection', color='red', alpha=0.7)
-
-            ax[0].plot(self.time_array, self.noise_data, label='Noise', color='green', alpha=0.5)
-            ax[1].loglog(self.freq_array[self.freq_mask],
-                         PDGRM_FACTOR * jnp.abs(self.injection_fft[self.freq_mask]) ** 2,
-                         label='Injection Power', color='red', alpha=0.7)
-            ax[1].loglog(self.freq_array[self.freq_mask], PDGRM_FACTOR * jnp.abs(self.noise_fft[self.freq_mask]) ** 2,
-                         label='Noise Power', color='green', alpha=0.5)
-
-        ax[0].legend()
-        ax[1].legend()
-        ax[1].set_xlabel('Frequency (Hz)')
-        ax[1].set_ylabel('Power Spectral Density')
-
-        plt.suptitle(f"SNR: {self.get_snr(self.injection):.2f} ")
-
-        plt.tight_layout()
-        plt.savefig('strain_and_psd.png', dpi=150)
+        return plot_signal(
+            data=self.data,
+            inj=self.injection,
+            noise=self.noise,
+            data_fft=self.data_fft,
+            inj_fft=self.injection_fft,
+            noise_fft=self.noise_fft,
+            psd=self.psd,
+            snr=self.injection_snr
+        )
 
 
-def starccato_numpyro_model(
-        likelihood: StarccatoLVKLikelihood,
-):
-    """NumPyro model with proper priors."""
-    dims = likelihood.starccato_model.latent_dim
+@jax.jit
+def inner_product(a: jnp.ndarray, b: jnp.ndarray, psd: jnp.ndarray) -> float:
+    a, b, psd = a[FMASK], b[FMASK], psd[FMASK]
+    return jnp.sum((jnp.conj(a) * b) / psd).real
 
-    # Standard normal prior for latent variables
-    theta = numpyro.sample("z", dist.Normal(0, 10).expand([dims]))
 
-    # Generate fresh RNG key
-    model_rng = numpyro.prng_key()
+# @jax.jit(static_argnames=("model",))
+def log_likelihood(data_fft: jnp.ndarray, psd: jnp.ndarray, model: StarccatoCCSNe, z: jnp.ndarray,
+                   rng_key: jax.random.PRNGKey):
+    y_model = model.generate(z, rng_key) * DEFAULT_AMPL
+    model_fft = jnp.fft.rfft(y_model)
+    num = inner_product(model_fft, data_fft, psd)  # ⟨h,d⟩
+    den = inner_product(model_fft, model_fft, psd)  # ⟨h,h⟩
+    logL = num - 0.5 * den  # + constant (can be ignored in MCMC)
+    return logL
 
-    # Compute log likelihood
-    lnl = likelihood.log_likelihood(
-        theta, model_rng,
-    )
 
-    # Track likelihood value
+# @jax.jit(static_argnames=("model",))
+def log_likelihood_td(noise_sigma, data: jnp.ndarray, model: StarccatoCCSNe, z: jnp.ndarray,
+                      rng_key: jax.random.PRNGKey):
+    y_model = model.generate(z, rng_key) * DEFAULT_AMPL
+    resid = data - y_model
+    logL = -0.5 * jnp.sum((resid / noise_sigma) ** 2) - 0.5 * jnp.log(2 * jnp.pi * noise_sigma ** 2) * len(data)
+    return logL
+
+
+def numpyro_model(likelihood):
+    z = numpyro.sample("z", dist.Normal(0, 1).expand([likelihood.model.latent_dim]))
+    rng_key = numpyro.prng_key()
+    lnl = likelihood.log_likelihood(z, rng_key)
     numpyro.deterministic("log_likelihood", lnl)
-
-    # Factor in the likelihood
     numpyro.factor("likelihood", lnl)
 
 
-def run_sampler(
-        likelihood: StarccatoLVKLikelihood,
-        rng_key: int = 1,
-        **kwargs
-) -> MCMC:
-    """Run MCMC sampler."""
-    rng_key = jax.random.PRNGKey(rng_key)
-    nuts_kernel = NUTS(starccato_numpyro_model)
+def run_mcmc_with_diagnostics(likelihood, n_burnin=N_BURNIN, n_steps=N_STEPS, n_chains=2, outdir='results'):
+    """Run MCMC with better diagnostics and multiple chains"""
+
+    # Initialize NUTS with more conservative settings
+    nuts_kernel = NUTS(
+        numpyro_model,
+        target_accept_prob=0.8,  # Lower target accept prob for better exploration
+        max_tree_depth=10,  # Limit tree depth to prevent extremely long trajectories
+        init_strategy=numpyro.infer.init_to_median  # Better initialization
+    )
+
     mcmc = MCMC(
         nuts_kernel,
-        num_warmup=N_BURNIN,
-        num_samples=N_STEPS,
-        num_chains=1,
+        num_warmup=n_burnin,
+        num_samples=n_steps,
+        num_chains=n_chains,
         progress_bar=True
     )
-    mcmc.run(rng_key, likelihood=likelihood)
-    mcmc.print_summary()
 
+    # Run with different random keys for each chain
+    mcmc.run(jax.random.PRNGKey(42), likelihood=likelihood)
+
+    # Print detailed diagnostics
+    mcmc.print_summary(exclude_deterministic=False)
+
+    # Get samples and compute additional diagnostics
+    samples = mcmc.get_samples()
+
+    # Compute R-hat and ESS manually if needed
+    print("\n=== Additional Diagnostics ===")
+    for param in samples.keys():
+        if param != 'log_likelihood':  # Skip deterministic variables
+            param_samples = samples[param]
+            # Reshape for arviz: (chain, draw, *param_shape)
+            param_reshaped = param_samples.reshape(n_chains, n_steps, *param_samples.shape[1:])
+
+            # Convert to arviz InferenceData for better diagnostics
+            az_data = az.convert_to_inference_data({param: param_reshaped})
+
+            # Compute diagnostics
+            rhat = az.rhat(az_data)[param].values
+            ess_bulk = az.ess(az_data, method="bulk")[param].values
+            ess_tail = az.ess(az_data, method="tail")[param].values
+
+            print(f"{param}:")
+            print(f"  R-hat: {np.mean(rhat):.3f} (should be < 1.01)")
+            print(f"  ESS (bulk): {np.mean(ess_bulk):.1f}")
+            print(f"  ESS (tail): {np.mean(ess_tail):.1f}")
+
+    plot_results(likelihood, mcmc, outdir=outdir)
     return mcmc
 
 
-def plot_mcmc_results(likelihood, mcmc, outdir='mcmc_results'):
-    os.makedirs(outdir, exist_ok=True)
-    inf_data = az.from_numpyro(mcmc)
-    axes = az.plot_trace(inf_data, var_names=["z"])
-    true_params = likelihood.injection_params
-    for zi in true_params['z']:
-        axes[0, 0].axvline(zi, color='red', linestyle='--', label='True z')
-        axes[0, 1].axhline(zi, color='red', linestyle='--')
+def plot_signal(
+        data, inj, noise,
+        data_fft, inj_fft, noise_fft, psd,
+        snr
+):
+    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(7, 8))
+    ax1.plot(TIMES, data, label='Data', color='gray', alpha=0.7)
+    ax1.plot(TIMES, inj, label='Injection', color='orange', alpha=0.5, linewidth=2.5, ls='--', zorder=-1)
+    ax1.plot(TIMES, noise, label='Noise', color='green', alpha=0.5)
+    ax1.set_xlabel('Time (s)')
+    ax1.set_ylabel('Strain')
+    ax1.legend()
+
+    # Frequency domain
+    f = FREQS[FMASK]
+    data_pdgrm = jnp.abs(data_fft[FMASK]) ** 2
+    inj_pdgrm = jnp.abs(inj_fft[FMASK]) ** 2
+    noise_pdgrm = jnp.abs(noise_fft[FMASK]) ** 2
+    ax2.loglog(f, psd[FMASK], label='PSD', color='blue', linewidth=2)
+    ax2.loglog(f, data_pdgrm, color='gray', alpha=0.7, label='Data FFT')
+    ax2.loglog(f, inj_pdgrm, label='Injection FFT', color='orange', alpha=0.5, linewidth=2.5, ls='--', zorder=-1)
+    ax2.loglog(f, noise_pdgrm, label='Noise FFT', color='green', alpha=0.5)
+    ax2.set_xlabel('Frequency (Hz)')
+    ax2.set_ylabel('Power Spectral Density')
+    ax2.legend()
+
+    # add SNR to the plot in textbox top left corner
+    ax1.text(0.05, 0.95, f'SNR: {snr:.2f}', transform=ax1.transAxes,
+             fontsize=14, verticalalignment='top', bbox=dict(facecolor='white', alpha=0.8, edgecolor='none'))
+
+    ax2.set_xlim(FLOW, 2048)
     plt.tight_layout()
-    plt.savefig(f'{outdir}/trace_plot.png', dpi=150)
-
-    # plot time domain + freq domain posterior predictions
-    posterior_samples = mcmc.get_samples()
-    y_models = []
-    for i in range(min(50, len(posterior_samples['z']))):
-        z_sample = posterior_samples['z'][i]
-        y_model = likelihood.call_model(z_sample, random.PRNGKey(i))
-        y_models.append(y_model)
-    y_models = jnp.array(y_models)
+    return fig, [ax1, ax2]
 
 
-    fig, ax = plt.subplots(2, 1, figsize=(12, 8))
+def plot_results(likelihood, mcmc, outdir='results'):
+    os.makedirs(outdir, exist_ok=True)
+    samples = mcmc.get_samples()['z'][:50]
 
-    # TIME DOMAIN
-    ax[0].plot(likelihood.time_array, likelihood.injection, label='Injection', alpha=0.5, color='k', ls='--')
-    ax[0].fill_between(
-        likelihood.time_array,
-        jnp.percentile(y_models, 5, axis=0),
-        jnp.percentile(y_models, 95, axis=0),
-        color='C0', alpha=0.2, label='90% Credible Interval'
-    )
-    ax[0].set_xlabel('Time (s)')
-    ax[0].set_ylabel('Strain')
+    # Generate predictions
+    predictions = []
+    for i, z in enumerate(samples):
+        pred = likelihood.model.generate(z, random.PRNGKey(i)) * DEFAULT_AMPL
+        predictions.append(pred)
+    predictions = jnp.array(predictions)
 
-    # FREQ DOMAIN
-    freq_mask = likelihood.freq_mask
-    psd_interp = likelihood.psd_interp[freq_mask]
-    freq_array = likelihood.freq_array[freq_mask]
-    injection_fft = likelihood.injection_fft[freq_mask]
-    posterior_fft = jnp.fft.rfft(y_models, axis=1)[:, freq_mask]
-    periodogram_factor = 2.0 / (FS * N)  # Power spectral density normalization factor
-    injection_pdgrm = periodogram_factor* jnp.abs(injection_fft) ** 2
-    posterior_pdgrm = periodogram_factor * jnp.abs(posterior_fft) ** 2
+    pred_fft = jnp.abs(jnp.fft.rfft(predictions, axis=1)) ** 2
 
-    ax[1].loglog(freq_array, psd_interp, label='PSD', color='blue', alpha=0.7)
-    ax[1].loglog(freq_array, periodogram_factor * jnp.abs(injection_fft) ** 2,  color='k', ls='--')
-    ax[1].fill_between(
-        freq_array,
-        jnp.percentile(posterior_pdgrm, 5, axis=0),
-        jnp.percentile(posterior_pdgrm, 95, axis=0),
-        color='C0', alpha=0.2, label='90% Credible Interval'
-    )
-    ax[1].set_xlabel('Frequency (Hz)')
-    ax[1].set_ylabel('Power Spectral Density')
-    plt.savefig(f'{outdir}/posterior_predictions.png', dpi=150)
+    fig, (ax1, ax2) = likelihood.plot()
+
+    # Add posterior predictions
+    ax1.fill_between(TIMES,
+                     jnp.percentile(predictions, 5, axis=0),
+                     jnp.percentile(predictions, 95, axis=0),
+                     alpha=0.3, color='red', label='90% CI')
+    ax1.plot(TIMES,
+             jnp.median(predictions, axis=0),
+             color='red', linewidth=2, label='Posterior Median')
+
+    ci_95 = jnp.percentile(pred_fft[:, FMASK], 95, axis=0)
+    ci_5 = jnp.percentile(pred_fft[:, FMASK], 5, axis=0)
+    median_fft = jnp.median(pred_fft[:, FMASK], axis=0)
+
+    ax2.fill_between(FREQS[FMASK], ci_5, ci_95,
+                     alpha=0.3, color='red', label='90% CI')
+    ax2.loglog(FREQS[FMASK], median_fft,
+               color='red', linewidth=2, label='Posterior Median')
+
+    ax1.legend()
+    ax2.legend()
+    plt.tight_layout()
+    plt.savefig(f'{outdir}/posterior.png', dpi=150, bbox_inches='tight')
+    plt.close()
+
+    inf_data = az.from_numpyro(mcmc)
+    az.plot_trace(inf_data)
+    plt.savefig(f'{outdir}/trace_plot.png', dpi=150, bbox_inches='tight')
+    plt.close()
 
 
 if __name__ == '__main__':
-    model = StarccatoCCSNe()
-
-    likelihood = StarccatoLVKLikelihood.from_simulated_noise(
-        starccato_model=model,
-        injection_params=dict(
-            z=jnp.zeros(model.latent_dim),
-        ),
-        noise_level=1,  # Low noise as requested
-        use_flat_psd=True,  # Use flat PSD for simplicity
-    )
-
-    mcmc = run_sampler(
-        likelihood=likelihood,
-        rng_key=42,
-        num_warmup=1000,
-        num_samples=2000,
-        num_chains=1
-    )
-
-    plot_mcmc_results(likelihood, mcmc, outdir=OUTDIR)
+    outdir = 'out_mcmc'
+    likelihood = AnalysisObj.from_simulated_noise(z_injection=jnp.zeros(32), outdir=outdir)
+    mcmc = run_mcmc_with_diagnostics(likelihood, n_burnin=200, n_steps=200, n_chains=2, outdir=outdir)
