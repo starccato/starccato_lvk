@@ -1,0 +1,2 @@
+from .plot_posterior_predictive import plot_posterior_predictive
+from .plot_diagnostics import plot_diagnostics

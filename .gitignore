@@ -9,6 +9,7 @@ __pycache__/
 *.npy
 # Distribution / packaging
 .Python
+outdir
 build/
 develop-eggs/
 dist/
