@@ -55,23 +55,14 @@ def plot_posterior_predictive(inf_obj: arviz.InferenceData):
     strain = strain_td_rescaled / strain_scale
     asd = np.sqrt(np.clip(psd_array_rescaled / psd_scale, 1e-50, None))
 
-    whitened_strain = _whiten(strain, freqs, asd, sampling_frequency)
 
     # Extract pre-computed posterior predictive quantiles
     pp_quantiles  = inf_obj.constant_data.strain_td_quantiles.values
-    pp_lower_raw, pp_median_raw, pp_upper_raw = pp_quantiles[0], pp_quantiles[1], pp_quantiles[2]
-
-    ax_time.plot(t, whitened_strain, color=DATA_COL, label=f"{ifo_name} Data", alpha=0.2, linewidth=2)
-
-    # Whiten the posterior predictive quantiles for time domain plot
-    pp_lower_whitened = _whiten(pp_lower_raw, freqs, asd, sampling_frequency)
-    pp_median_whitened = _whiten(pp_median_raw, freqs, asd, sampling_frequency)
-    pp_upper_whitened = _whiten(pp_upper_raw, freqs, asd, sampling_frequency)
 
     # Plot 90% CI as shaded region
-    ax_time.fill_between(t, pp_lower_whitened, pp_upper_whitened, color=POSTERIOR_COL, alpha=0.3,
+    ax_time.fill_between(t, pp_quantiles[0], pp_quantiles[2], color=POSTERIOR_COL, alpha=0.3,
                          label='90% CI Posterior Predictive', linewidth=0)
-    ax_time.plot(t, pp_median_whitened, color=POSTERIOR_COL, alpha=0.8, linewidth=1.5,
+    ax_time.plot(t, pp_quantiles[1], color=POSTERIOR_COL, alpha=0.8, linewidth=1.5,
                  label='Median Posterior Predictive')
 
     # Add SNR info from arviz attributes
@@ -98,7 +89,7 @@ def plot_posterior_predictive(inf_obj: arviz.InferenceData):
 
     # Convert posterior predictive quantiles to frequency domain
     pp_quantiles_fd = []
-    for pp_waveform in [pp_lower_raw, pp_median_raw, pp_upper_raw]:
+    for pp_waveform in pp_quantiles:
         waveform_fd, _ = nfft(pp_waveform, sampling_frequency)
         asd_model = gwutils.asd_from_freq_series(freq_data=waveform_fd, df=df)
 
@@ -130,12 +121,16 @@ def plot_posterior_predictive(inf_obj: arviz.InferenceData):
     # Injection signal (if provided in constant_data)
     if 'injection_signal' in inf_obj.constant_data:
         inj = inf_obj.constant_data.injection_signal.values
-        signal_rescaled = inj * (np.std(whitened_strain) / np.std(inj))
         freq_sig, _ = nfft(inj, sampling_frequency)
         asd_sig = gwutils.asd_from_freq_series(freq_data=freq_sig, df=df)
-        ax_time.plot(t, signal_rescaled, color=SIGNAL_COL, label='Injected Signal', linewidth=2, alpha=0.9)
+        ax_time.plot(t, inj, color=SIGNAL_COL, label='Injected Signal', linewidth=2, alpha=0.9)
         ax_freq.loglog(freqs[mask_s], asd_sig[mask_s], color=SIGNAL_COL, linewidth=2, alpha=0.9,
                        label="Injected Signal")
 
     plt.tight_layout()
     return fig
+
+
+def plot_posterior_comparision(ccsne_obj, glitch_obj, fname="comparison.pdf"):
+    """Compare posterior predictives from CCSN and glitch models."""
+    pass
