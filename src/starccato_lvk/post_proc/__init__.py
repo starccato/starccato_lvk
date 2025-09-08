@@ -1,2 +1,2 @@
-from .plot_posterior_predictive import plot_posterior_predictive
+from .plot_posterior_predictive import plot_posterior_predictive, plot_posterior_comparison
 from .plot_diagnostics import plot_diagnostics

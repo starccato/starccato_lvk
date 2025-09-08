@@ -61,8 +61,10 @@ class LvkDataPrep:
         self.ifo = None
         self.rescaled_data = None
         self.injection_signal = None
+        self.window = None
         self.snr_optimal = None
         self.snr_matched = None
+        self.lnz_noise = None
 
     @classmethod
     def load(cls, data_path, psd_path, **kwargs):
@@ -123,11 +125,15 @@ class LvkDataPrep:
             injection = self._generate_injection()
 
         # Setup interferometer
-        self.ifo, self.snr_optimal, self.snr_matched, self.injection_signal = \
+        self.ifo, self.snr_optimal, self.snr_matched, self.injection_signal, self.window = \
             self._set_interferometer_from_data(data, psd_data, injection)
 
         # Prepare rescaled data
         self.rescaled_data = self._prepare_rescaled_data()
+
+        # Compute noise log-evidence
+        self.lnz_noise = noise_log_evidence(self.ifo, self.ifo.strain_data.duration)
+
 
     def _generate_injection(self):
         """Generate injection waveform from the waveform model."""
@@ -158,6 +164,7 @@ class LvkDataPrep:
 
         # Set strain data
         ifo.strain_data.set_from_gwpy_timeseries(data)
+        td_window = ifo.strain_data.time_domain_window(roll_off=self.roll_off)
 
         # Handle PSD - check if it's TimeSeries or FrequencySeries
         if hasattr(psd_data, 'frequencies'):
@@ -197,7 +204,7 @@ class LvkDataPrep:
         ifo.minimum_frequency = FLOW
         ifo.maximum_frequency = FMAX
 
-        return ifo, snr_optimal, snr_matched, injection_aligned
+        return ifo, snr_optimal, snr_matched, injection_aligned, td_window
 
     def _prepare_rescaled_data(self):
         """Prepare and rescale interferometer data for numerical stability."""
@@ -232,3 +239,14 @@ class LvkDataPrep:
             'optimal_snr': self.snr_optimal,
             'matched_snr': self.snr_matched
         }
+
+
+def noise_log_evidence(ifo, waveform_duration):
+    """
+    The noise hypothesis (ie data = noise) has no parameters.
+    Hence, the log-evidence is just the lnLikelihood.
+    """
+    log_l = -2. / waveform_duration * np.sum(
+        abs(ifo.frequency_domain_strain) ** 2 /
+        ifo.power_spectral_density_array)
+    return log_l.real

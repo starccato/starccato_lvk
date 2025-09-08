@@ -1,10 +1,13 @@
 import arviz as az
 import jax
 import numpy as np
+import jax.numpy as jnp
 from starccato_jax.starccato_model import StarccatoModel
 from numpyro.contrib.nested_sampling import NestedSampler
 from .lvk_data_prep import LvkDataPrep
-
+from bilby.core.utils import nfft
+from .constants import SAMPLING_FREQUENCY, FMAX, FLOW
+from bilby.gw import utils as gwutils
 
 def to_posterior_dict(inf_obj: az.InferenceData):
     """Convert arviz InferenceData to a posterior dictionary."""
@@ -18,6 +21,7 @@ def _generate_posterior_predictive_quantiles(
         strain_scale: float, strain_td_length: int,
         theta_samples: np.ndarray, strain_amplitude_samples: np.ndarray,
         starccato_model: StarccatoModel,
+        window: jnp.array,
         num_samples=200) -> np.ndarray:
     """Generate posterior predictive waveforms using the StarCCaTo model."""
 
@@ -32,6 +36,7 @@ def _generate_posterior_predictive_quantiles(
         rng_key = jax.random.PRNGKey(i)
         y_model = starccato_model.generate(z=theta_sample, rng=rng_key)
         y_model = np.array(y_model, dtype=np.float64)
+        y_model = y_model * np.array(window)  # Apply windowing to reduce edge effects
 
         # Apply strain amplitude AND rescaling (same as in the NumPyro model)
         y_model_rescaled = y_model * strain_amplitude / strain_scale
@@ -44,12 +49,32 @@ def _generate_posterior_predictive_quantiles(
 
         waveforms_rescaled.append(np.array(y_model_rescaled))
 
+
+
     waveforms = np.array(waveforms_rescaled)
-    return np.quantile(waveforms, [0.05, 0.5, 0.95], axis=0)
+
+
+    # freq-domain waveforms
+
+    waveforms_fd = []
+    for waveform in waveforms:
+        waveform_fd, freq = nfft(waveform, SAMPLING_FREQUENCY)
+        df = freq[1] - freq[0]
+        asd = gwutils.asd_from_freq_series(freq_data=waveform_fd, df=df)
+        # crop to correct freq
+        # asd = asd[(freq >= FLOW) & (freq <= FMAX)]
+        waveforms_fd.append(asd)
+
+
+
+    td_qtles = np.quantile(waveforms, [0.05, 0.5, 0.95], axis=0)
+    fd_qtles = np.quantile(waveforms_fd, [0.05, 0.5, 0.95], axis=0)
+
+    return td_qtles, fd_qtles
 
 
 def _to_inference_obj(ns_obj: NestedSampler, rng: jax.random.PRNGKey, num_samples: int, data: LvkDataPrep,
-                      runtime: float, starccato_model: StarccatoModel) -> az.InferenceData:
+                      runtime: float, starccato_model: StarccatoModel, window:jnp.array) -> az.InferenceData:
     """
     Convert NestedSampler results to arviz InferenceData object.
     """
@@ -62,12 +87,13 @@ def _to_inference_obj(ns_obj: NestedSampler, rng: jax.random.PRNGKey, num_sample
     amp_samples = np.exp(log_amp_samples)
 
     # Compute posterior predictive quantiles
-    pp_quantiles = _generate_posterior_predictive_quantiles(
+    td_quantiles, fd_quantiles = _generate_posterior_predictive_quantiles(
         strain_scale=data.rescaled_data['strain_scale'],
         strain_td_length=len(data.rescaled_data['strain_td']),
         theta_samples=theta_samples,
         strain_amplitude_samples=amp_samples,
         starccato_model=starccato_model,
+        window=data.window,
         num_samples=200
     )
 
@@ -78,6 +104,7 @@ def _to_inference_obj(ns_obj: NestedSampler, rng: jax.random.PRNGKey, num_sample
     stats = {
         'log_evidence': float(ns_obj._results.log_Z_mean),
         'log_evidence_uncertainty': float(ns_obj._results.log_Z_uncert),
+        'log_evidence_noise': float(data.lnz_noise),
         'effective_sample_size': int(getattr(ns_obj._results, 'ESS', num_samples)),
         'num_likelihood_evaluations': int(ns_obj._results.total_num_likelihood_evaluations),
         'total_samples': int(ns_obj._results.total_num_samples),
@@ -120,7 +147,8 @@ def _to_inference_obj(ns_obj: NestedSampler, rng: jax.random.PRNGKey, num_sample
         'start_time': np.array([data.ifo.strain_data.start_time]),
         'time_array': data.ifo.strain_data.time_array,
         # Posterior predictive quantiles as constant data
-        'strain_td_quantiles': pp_quantiles,  # Shape: (3, time_length) for [5%, 50%, 95%]
+        'strain_td_quantiles': td_quantiles,  # Shape: (3, time_length) for [5%, 50%, 95%]
+        'strain_fd_quantiles': fd_quantiles,  # Shape: (3, (freqs, waveform_fd)
     }
 
     # Handle injection data if present
@@ -157,6 +185,7 @@ def _to_inference_obj(ns_obj: NestedSampler, rng: jax.random.PRNGKey, num_sample
         'frequency_array': ['frequency'],
         'time_array': ['time'],
         'strain_td_quantiles': ['quantile', 'time'],  # Quantiles x Time
+        'strain_fd_quantiles': ['quantile', 'frequency'],  # Quantiles x Frequency
     }
 
     # Add dimensions for injection data if present
