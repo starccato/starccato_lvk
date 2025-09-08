@@ -2,7 +2,7 @@ import bilby
 import jax.numpy as jnp
 import numpy as np
 import os
-from starccato_jax.waveforms import StarccatoCCSNe
+from starccato_jax.waveforms import StarccatoCCSNe, StarccatoBlip
 from starccato_lvk.lvk_data_prep import LvkDataPrep
 from starccato_lvk.post_proc import plot_posterior_predictive, plot_diagnostics
 from starccato_lvk.likelihood import run_inference
@@ -11,13 +11,9 @@ import arviz as az
 np.random.seed(170801)
 
 
-def main():
+def main(outdir="outdir"):
     """Main analysis pipeline with NumPyro inference."""
     HERE = os.path.dirname(os.path.abspath(__file__))
-    OUTDIR = "outdir"
-    LABEL = "supernova_numpyro"
-
-    bilby.core.utils.setup_logger(outdir=OUTDIR, label=LABEL)
 
     # Setup waveform model and injection parameters
     starccato_model = StarccatoCCSNe()
@@ -37,7 +33,7 @@ def main():
         injection_params=injection_params
     )
     snrs = data.get_snrs()
-    print(f"\nAnalysis Complete - {LABEL}")
+    print(f"\nAnalysis Complete ")
     print(f"Optimal SNR: {snrs['optimal_snr']:.3f}")
     print(f"Matched Filter SNR: {snrs['matched_snr']:.3f}")
 
