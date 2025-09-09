@@ -113,7 +113,7 @@ def run_inference(
     print(f"Nested sampling completed in {runtime:.2f} seconds.")
     ns.print_summary()
 
-    result = _to_inference_obj(ns, rng, num_samples, data, runtime, starccato_model, data.window)
+    result = _to_inference_obj(ns, rng, num_samples, data, runtime, starccato_model)
     print_evidence_summary(result)
     return result
 

@@ -142,6 +142,7 @@ def run_starccato_analysis(
     ccsne_lnz = ccsne_results.attrs.get('log_evidence', 0)
     blip_lnz = blip_results.attrs.get('log_evidence', 0)
     noise_lnz = ccsne_results.attrs.get('log_evidence_noise', 0)
+    match_snr = ccsne_results.constant_data.snr_quantiles.values[1,1]
     # z_ccsn / (z_ccsn + z_blip)
     lnbf = ccsne_lnz - (noise_lnz + blip_lnz)
 
@@ -150,13 +151,15 @@ def run_starccato_analysis(
     print(f"BLIP log_evidence: {blip_lnz:.4f}")
     print(f"Noise log_evidence: {noise_lnz:.4f}")
     print(f"Log Bayes Factor (CCSNE / (Noise + BLIP)): {lnbf:.4f}")
+    print(f"CCSNE-Matched Filter SNR: {match_snr:.3f}")
 
     # write summary into text file
     summary_fname = os.path.join(outdir, "comparison_summary.txt")
     np.savetxt(
         summary_fname,
-        np.array([[ccsne_lnz, blip_lnz, noise_lnz, lnbf]]),
-        header="ccsne_lnz blip_lnz noise_lnz lnbf"
+        np.array([[ccsne_lnz, blip_lnz, noise_lnz, lnbf, match_snr]]),
+        header="ccsne_lnz blip_lnz noise_lnz lnbf snr",
+        fmt="%.8f"
     )
     return results
 

@@ -14,8 +14,7 @@ FLOW = 100.0
 DATA_COL = "tab:gray"
 SIGNAL_COL = "tab:orange"
 PSD_COL = "black"
-POSTERIOR_COL = "tab:blue"
-CCSN_COL = "tab:red"
+CCSN_COL = "tab:blue"
 GLITCH_COL = "tab:green"
 
 
@@ -27,7 +26,7 @@ def _extract_data_from_arviz(inf_obj):
     psd_scale = float(inf_obj.constant_data.psd_scale.values[0])
     sampling_frequency = float(inf_obj.constant_data.sampling_frequency.values[0])
     df = float(inf_obj.constant_data.df.values[0])
-    ifo_name = str(inf_obj.constant_data.ifo_name.values)
+    ifo_name = str(inf_obj.constant_data.ifo_name.values).strip("[]'")  # Clean up string
     t0 = float(inf_obj.constant_data.start_time.values[0])
 
     # Observational data
@@ -45,6 +44,8 @@ def _extract_data_from_arviz(inf_obj):
     pp_quantiles = inf_obj.constant_data.strain_td_quantiles.values
     pp_quantiles_fd = inf_obj.constant_data.strain_fd_quantiles.values
 
+    model_name = inf_obj.attrs.get('model_name', 'Model')
+
     data = {
         'strain_scale': strain_scale,
         'psd_scale': psd_scale,
@@ -58,7 +59,8 @@ def _extract_data_from_arviz(inf_obj):
         'freqs': freqs,
         't': t,
         'pp_quantiles': pp_quantiles,
-        'pp_quantiles_fd': pp_quantiles_fd  # Add frequency domain quantiles
+        'pp_quantiles_fd': pp_quantiles_fd,  # Add frequency domain quantiles
+        'model_name': model_name
     }
 
     # Add injection signal if available
@@ -68,7 +70,7 @@ def _extract_data_from_arviz(inf_obj):
     return data
 
 
-def _plot_time_domain_posterior(ax, data, color=POSTERIOR_COL, label_prefix="", alpha=0.3, plot_injection=True):
+def _plot_time_domain_posterior(ax, data, color:str, label_prefix="", alpha=0.3, plot_injection=True):
     """Plot time domain posterior predictive on given axes."""
     t = data['t']
     pp_quantiles = data['pp_quantiles']
@@ -76,21 +78,20 @@ def _plot_time_domain_posterior(ax, data, color=POSTERIOR_COL, label_prefix="", 
 
     # Plot 90% CI as shaded region
     ax.fill_between(t, pp_quantiles[0], pp_quantiles[2], color=color, alpha=alpha,
-                    label=f'{label_prefix}90% CI Posterior Predictive', linewidth=0)
-    ax.plot(t, pp_quantiles[1], color=color, alpha=0.8, linewidth=1.5,
-            label=f'{label_prefix}Median Posterior Predictive')
+                    label=label_prefix, linewidth=0)
+    ax.plot(t, pp_quantiles[1], color=color, alpha=0.8, linewidth=1.5)
 
     # Plot injection signal if available and requested
     if plot_injection and 'injection_signal' in data:
         inj = data['injection_signal']
-        ax.plot(t, inj, color=SIGNAL_COL, label='Injected Signal', linewidth=2, alpha=0.9)
+        ax.plot(t, inj, color=SIGNAL_COL, label='Injected Signal', linewidth=2, alpha=0.9, zorder=-10)
 
     ax.set_xlabel(f"Time [s] from GPS {t0}")
-    ax.set_ylabel("Whitened Strain")
+    ax.set_ylabel("Strain")
     ax.grid(False)
 
 
-def _plot_frequency_domain_posterior(ax, data, color=POSTERIOR_COL, label_prefix="", alpha=0.3,
+def _plot_frequency_domain_posterior(ax, data, color:str, label_prefix="", alpha=0.3,
                                      plot_data=True, plot_injection=True):
     """Plot frequency domain posterior predictive on given axes."""
     freqs = data['freqs']
@@ -119,9 +120,9 @@ def _plot_frequency_domain_posterior(ax, data, color=POSTERIOR_COL, label_prefix
     # Plot 90% CI as shaded region
     ax.fill_between(freqs[mask_s], pp_lower_fd[mask_s], pp_upper_fd[mask_s],
                     color=color, alpha=alpha,
-                    label=f'{label_prefix}90% CI Posterior Predictive', linewidth=0)
+                    label=label_prefix, linewidth=0)
     ax.loglog(freqs[mask_s], pp_median_fd[mask_s], color=color, alpha=0.8,
-              linewidth=1.5, label=f'{label_prefix}Median Posterior Predictive')
+              linewidth=1.5)
 
     # Plot injection signal if available and requested
     if plot_injection and 'injection_signal' in data:
@@ -142,15 +143,17 @@ def plot_posterior_predictive(inf_obj: arviz.InferenceData, fname='posterior_pre
 
     # Extract data (now includes frequency domain quantiles)
     data = _extract_data_from_arviz(inf_obj)
+    model_name = data.get('model_name', 'Model')
+    color = CCSN_COL if model_name.lower() == 'ccsn' else GLITCH_COL
 
     # Plot time domain
-    _plot_time_domain_posterior(ax_time, data)
+    _plot_time_domain_posterior(ax_time, data, color=color)
 
     # Add SNR info from arviz attributes
     if hasattr(inf_obj, 'attrs'):
         attrs = inf_obj.attrs
         if 'optimal_snr' in attrs and 'matched_snr' in attrs:
-            snr_text = f'Optimal SNR: {attrs["optimal_snr"]:.2f}\nMatched Filter SNR: {attrs["matched_snr"]:.2f}'
+            snr_text = f'[SNRs: Optimal:{attrs["optimal_snr"]:.2f}, Matched:{attrs["matched_snr"]:.2f}'
             ax_time.text(0.02, 0.98, snr_text, transform=ax_time.transAxes,
                          verticalalignment='top', bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
@@ -158,7 +161,7 @@ def plot_posterior_predictive(inf_obj: arviz.InferenceData, fname='posterior_pre
     ax_time.set_title("Time Domain with Posterior Predictive")
 
     # Plot frequency domain
-    _plot_frequency_domain_posterior(ax_freq, data)
+    _plot_frequency_domain_posterior(ax_freq, data, color=color)
     ax_freq.legend(frameon=False)
     ax_freq.set_title("Frequency Domain with Posterior Predictive")
 
@@ -190,13 +193,13 @@ def plot_posterior_comparison(ccsne_obj, glitch_obj, fname="comparison.pdf"):
     if hasattr(ccsne_obj, 'attrs'):
         attrs = ccsne_obj.attrs
         if 'optimal_snr' in attrs and 'matched_snr' in attrs:
-            snr_texts.append(f'CCSN - Optimal SNR: {attrs["optimal_snr"]:.2f}, Matched SNR: {attrs["matched_snr"]:.2f}')
+            snr_texts.append(f'CCSN [SNRs: Optimal:{attrs["optimal_snr"]:.2f}, Matched:{attrs["matched_snr"]:.2f}')
 
     if hasattr(glitch_obj, 'attrs'):
         attrs = glitch_obj.attrs
         if 'optimal_snr' in attrs and 'matched_snr' in attrs:
             snr_texts.append(
-                f'Glitch - Optimal SNR: {attrs["optimal_snr"]:.2f}, Matched SNR: {attrs["matched_snr"]:.2f}')
+                f'Glitch [SNRs: Optimal:{attrs["optimal_snr"]:.2f}, Matched:{attrs["matched_snr"]:.2f}')
 
     if snr_texts:
         snr_text = '\n'.join(snr_texts)
