@@ -34,7 +34,7 @@ def _bayesian_model(rescaled_data, starccato_model, window, rng):
     # Sample log strain amplitude
     log_strain_amplitude = numpyro.sample(
         "log_strain_amplitude",
-        dist.Normal(-2.3, 1.0)
+        dist.Normal(-2.3, 3.0)
     )
 
     strain_amplitude = jnp.exp(log_strain_amplitude)
