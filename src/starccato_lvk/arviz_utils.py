@@ -18,14 +18,20 @@ def to_posterior_dict(inf_obj: az.InferenceData):
 
 
 def _generate_posterior_predictive_quantiles(
-        strain_scale: float, strain_td_length: int,
+        data: LvkDataPrep,
         theta_samples: np.ndarray, strain_amplitude_samples: np.ndarray,
         starccato_model: StarccatoModel,
         window: jnp.array,
         num_samples=200) -> np.ndarray:
     """Generate posterior predictive waveforms using the StarCCaTo model."""
 
-    waveforms_rescaled = []
+    strain_scale = data.rescaled_data['strain_scale']
+    strain_td_length = len(data.rescaled_data['strain_td'])
+    df = data.rescaled_data['df']
+
+    waveforms = []
+    waveforms_asd = []
+    snrs = []
     nsamp = len(theta_samples)  # Fixed: theta_samples is already the array
 
     for i in range(min(num_samples, nsamp)):
@@ -47,34 +53,30 @@ def _generate_posterior_predictive_quantiles(
         elif len(y_model_rescaled) < strain_td_length:
             y_model_rescaled = np.pad(y_model_rescaled, (0, strain_td_length - len(y_model_rescaled)))
 
-        waveforms_rescaled.append(np.array(y_model_rescaled))
-
-
-
-    waveforms = np.array(waveforms_rescaled)
-
-
-    # freq-domain waveforms
-
-    waveforms_fd = []
-    for waveform in waveforms:
-        waveform_fd, freq = nfft(waveform, SAMPLING_FREQUENCY)
-        df = freq[1] - freq[0]
+        y_model_rescaled = np.array(y_model_rescaled)
+        waveform_fd, _ = nfft(y_model_rescaled, SAMPLING_FREQUENCY)
         asd = gwutils.asd_from_freq_series(freq_data=waveform_fd, df=df)
-        # crop to correct freq
-        # asd = asd[(freq >= FLOW) & (freq <= FMAX)]
-        waveforms_fd.append(asd)
+        snr = data.compute_snr(y_model_rescaled)
+
+        waveforms_asd.append(asd)
+        waveforms.append(np.array(y_model_rescaled))
+        snrs.append(snr)  # Store both optimal and matched SNR
 
 
+    waveforms = np.array(waveforms)
+    waveforms_fd = np.array(waveforms_asd)
+    snrs = np.array(snrs)
 
-    td_qtles = np.quantile(waveforms, [0.05, 0.5, 0.95], axis=0)
-    fd_qtles = np.quantile(waveforms_fd, [0.05, 0.5, 0.95], axis=0)
 
-    return td_qtles, fd_qtles
+    td_qtles = np.quantile(waveforms, [0.1, 0.5, 0.9], axis=0)
+    fd_qtles = np.quantile(waveforms_fd, [0.1, 0.5, 0.9], axis=0)
+    snr_qtles = np.quantile(snrs, [0.1, 0.5, 0.9], axis=0)
+
+    return td_qtles, fd_qtles, snr_qtles
 
 
 def _to_inference_obj(ns_obj: NestedSampler, rng: jax.random.PRNGKey, num_samples: int, data: LvkDataPrep,
-                      runtime: float, starccato_model: StarccatoModel, window:jnp.array) -> az.InferenceData:
+                      runtime: float, starccato_model: StarccatoModel) -> az.InferenceData:
     """
     Convert NestedSampler results to arviz InferenceData object.
     """
@@ -87,9 +89,8 @@ def _to_inference_obj(ns_obj: NestedSampler, rng: jax.random.PRNGKey, num_sample
     amp_samples = np.exp(log_amp_samples)
 
     # Compute posterior predictive quantiles
-    td_quantiles, fd_quantiles = _generate_posterior_predictive_quantiles(
-        strain_scale=data.rescaled_data['strain_scale'],
-        strain_td_length=len(data.rescaled_data['strain_td']),
+    td_quantiles, fd_quantiles, snr_quantiles = _generate_posterior_predictive_quantiles(
+        data=data,
         theta_samples=theta_samples,
         strain_amplitude_samples=amp_samples,
         starccato_model=starccato_model,
@@ -109,7 +110,9 @@ def _to_inference_obj(ns_obj: NestedSampler, rng: jax.random.PRNGKey, num_sample
         'num_likelihood_evaluations': int(ns_obj._results.total_num_likelihood_evaluations),
         'total_samples': int(ns_obj._results.total_num_samples),
         'runtime': runtime,
-        **data.get_snrs()
+        'model_latent_dim': starccato_model.latent_dim,
+        'model_name': starccato_model.model_name,
+        **data.get_snrs(),
     }
 
     # Create arviz InferenceData object
@@ -149,6 +152,7 @@ def _to_inference_obj(ns_obj: NestedSampler, rng: jax.random.PRNGKey, num_sample
         # Posterior predictive quantiles as constant data
         'strain_td_quantiles': td_quantiles,  # Shape: (3, time_length) for [5%, 50%, 95%]
         'strain_fd_quantiles': fd_quantiles,  # Shape: (3, (freqs, waveform_fd)
+        'snr_quantiles': snr_quantiles,  # Shape: (3, 2) for [5%, 50%, 95%] SNR (optimal, matched)
     }
 
     # Handle injection data if present
@@ -170,7 +174,8 @@ def _to_inference_obj(ns_obj: NestedSampler, rng: jax.random.PRNGKey, num_sample
         'theta_dim': np.arange(starccato_model.latent_dim),
         'time': np.arange(len(observed_data_dict['strain_td'])),
         'frequency': constant_data_dict['frequency_array'],
-        'quantile': ['q05', 'q50', 'q95'],  # Labels for the quantiles
+        'quantile': ['q05', 'q50', 'q95'],  # Labels for the quantiles,
+        'snr_type': ['optimal', 'matched']  # Labels for SNR types
     }
 
     # Specify dimensions for variables
@@ -186,6 +191,7 @@ def _to_inference_obj(ns_obj: NestedSampler, rng: jax.random.PRNGKey, num_sample
         'time_array': ['time'],
         'strain_td_quantiles': ['quantile', 'time'],  # Quantiles x Time
         'strain_fd_quantiles': ['quantile', 'frequency'],  # Quantiles x Frequency
+        'snr_quantiles': ['quantile', 'snr_type'],  # Quantiles for SNR
     }
 
     # Add dimensions for injection data if present

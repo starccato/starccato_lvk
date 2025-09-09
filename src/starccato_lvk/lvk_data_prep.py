@@ -125,8 +125,10 @@ class LvkDataPrep:
             injection = self._generate_injection()
 
         # Setup interferometer
-        self.ifo, self.snr_optimal, self.snr_matched, self.injection_signal, self.window = \
+        self.ifo, self.injection_signal, self.window = \
             self._set_interferometer_from_data(data, psd_data, injection)
+
+        self.snr_optimal, self.snr_matched = self._set_ifo_snrs()
 
         # Prepare rescaled data
         self.rescaled_data = self._prepare_rescaled_data()
@@ -185,26 +187,14 @@ class LvkDataPrep:
         injection_aligned = injection
 
         if injection is not None:
-            # FFT of injection for SNR calculation
-            freq_inj, _ = nfft(injection, SAMPLING_FREQUENCY)
-
             # Inject signal (additive model)
-            injected_strain = data + injection
-            ifo.strain_data.set_from_gwpy_timeseries(injected_strain)
+            ifo.strain_data.set_from_gwpy_timeseries(data + injection)
 
-            # Compute SNRs
-            snr_optimal = np.sqrt(ifo.optimal_snr_squared(signal=freq_inj)).real
-            snr_matched = ifo.matched_filter_snr(signal=freq_inj)
-
-            ifo.meta_data.update(
-                optimal_SNR=snr_optimal,
-                matched_SNR=snr_matched,
-            )
 
         ifo.minimum_frequency = FLOW
         ifo.maximum_frequency = FMAX
 
-        return ifo, snr_optimal, snr_matched, injection_aligned, td_window
+        return ifo, injection_aligned, td_window
 
     def _prepare_rescaled_data(self):
         """Prepare and rescale interferometer data for numerical stability."""
@@ -239,6 +229,23 @@ class LvkDataPrep:
             'optimal_snr': self.snr_optimal,
             'matched_snr': self.snr_matched
         }
+
+    def compute_snr(self, waveform:np.ndarray):
+        """Compute optimal and matched SNR for a given waveform."""
+        freq_waveform, _ = nfft(waveform, SAMPLING_FREQUENCY)
+        snr_optimal = np.sqrt(self.ifo.optimal_snr_squared(signal=freq_waveform)).real
+        snr_matched = self.ifo.matched_filter_snr(signal=freq_waveform)
+        return snr_optimal, np.abs(snr_matched)
+
+    def _set_ifo_snrs(self):
+        if self.injection_signal is None:
+            return None, None
+        snr_optimal, snr_matched = self.compute_snr(self.injection_signal)
+        self.ifo.meta_data.update(
+            optimal_SNR=snr_optimal,
+            matched_SNR=snr_matched,
+        )
+        return snr_optimal, snr_matched
 
 
 def noise_log_evidence(ifo, waveform_duration):
