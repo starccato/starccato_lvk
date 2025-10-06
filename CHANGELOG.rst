@@ -5,6 +5,25 @@ CHANGELOG
 =========
 
 
+.. _changelog-v0.0.2:
+
+v0.0.2 (2025-10-06)
+===================
+
+Bug Fixes
+---------
+
+* fix: pypi error (`ebf36f5`_)
+
+Unknown
+-------
+
+* Merge branch 'main' of github.com:starccato/starccato_lvk (`740d1bd`_)
+
+.. _ebf36f5: https://github.com/starccato/starccato_lvk/commit/ebf36f55556f10e3df2e5e8fc465f6cb41458de2
+.. _740d1bd: https://github.com/starccato/starccato_lvk/commit/740d1bd26d06f8031053ebd20a88551bff50092b
+
+
 .. _changelog-v0.0.1:
 
 v0.0.1 (2025-10-06)
@@ -15,8 +34,15 @@ Bug Fixes
 
 * fix: add missing packages to pyproj (`f0e254f`_)
 
+Chores
+------
+
+* chore(release): 0.0.1 (`68f7303`_)
+
 Unknown
 -------
+
+* add readme to pyproj (`887d746`_)
 
 * add scipy (`1e7866a`_)
 
@@ -81,6 +107,8 @@ Unknown
 * Initial commit (`6974955`_)
 
 .. _f0e254f: https://github.com/starccato/starccato_lvk/commit/f0e254f87b6aef4a9c0cf757475854da40fb134e
+.. _68f7303: https://github.com/starccato/starccato_lvk/commit/68f7303fcdbfa352d87894634e79782ea4cf1dcb
+.. _887d746: https://github.com/starccato/starccato_lvk/commit/887d7467702e22660d918c14a11925d4b1edc274
 .. _1e7866a: https://github.com/starccato/starccato_lvk/commit/1e7866af19444f5b95458b1b17cc3436372d3aef
 .. _5c5c8e1: https://github.com/starccato/starccato_lvk/commit/5c5c8e1dc18dfafcdc8c761f23700fee3daa9377
 .. _37dfaab: https://github.com/starccato/starccato_lvk/commit/37dfaab5cd6b932205d8925aff74b1fcc02bf625
