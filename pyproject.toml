@@ -11,7 +11,7 @@ name = "starccato_lvk"
 dynamic = ["version"] # scm versioning (using tags)
 requires-python = ">=3.9"
 description = "JAX-VAE stellar core collapse waveform tools for LVK data analysis"
-readme = "README.rst"
+readme = "README.md"
 authors = [
     { name = "Starccato Team", email = "avi.vajpeyi@gmail.com" },
 ]
