@@ -140,3 +140,4 @@ ignore_missing_imports = true
 get_analysis_data = "starccato_lvk.data_acquisition.main:cli_get_analysis_data"
 get_valid_times = "starccato_lvk.data_acquisition.main:cli_get_valid_times"
 collect_lvk_data = "starccato_lvk.data_acquisition.main:cli_collect_lvk_data"
+lvk_fetch = "starccato_lvk.data_acquisition.lvk_fetch:cli"
