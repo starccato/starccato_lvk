@@ -32,6 +32,9 @@ dependencies = [
     "pillow",
     "natsort",
     "tqdm",
+    "pycbc",
+    "gwpy",
+    "scipy",
 ]
 
 [project.optional-dependencies]
