@@ -6,3 +6,10 @@ This project handles:
 - Generation of random clean trigger times
 - Median-Welch PSD estimation
 - Signal injection setup for testing inference pipelines
+
+
+Main CLI command needed:
+```bash
+
+cli_collect_lvk_data
+```
