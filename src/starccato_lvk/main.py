@@ -1,13 +1,13 @@
-import bilby
-import jax.numpy as jnp
-import numpy as np
 import os
+from typing import Dict, Any
+
+import arviz as az
+import click
+import numpy as np
 from starccato_jax.waveforms import MODELS, get_model
+from starccato_lvk.likelihood import run_inference
 from starccato_lvk.lvk_data_prep import LvkDataPrep
 from starccato_lvk.post_proc import plot_posterior_predictive, plot_diagnostics, plot_posterior_comparison
-from starccato_lvk.likelihood import run_inference
-import arviz as az
-from typing import Dict, Any
 
 
 def run_starccato_analysis(
@@ -18,7 +18,7 @@ def run_starccato_analysis(
         injection_model_type: str = 'ccsne',
         num_samples: int = 2000,
         force_rerun: bool = False,
-        test_mode:bool = False,
+        test_mode: bool = False,
         verbose: bool = False,
 ) -> Dict[str, az.InferenceData]:
     """
@@ -142,7 +142,7 @@ def run_starccato_analysis(
     ccsne_lnz = ccsne_results.attrs.get('log_evidence', 0)
     blip_lnz = blip_results.attrs.get('log_evidence', 0)
     noise_lnz = ccsne_results.attrs.get('log_evidence_noise', 0)
-    match_snr = ccsne_results.constant_data.snr_quantiles.values[1,1]
+    match_snr = ccsne_results.constant_data.snr_quantiles.values[1, 1]
     # z_ccsn / (z_ccsn + z_blip)
     lnbf = ccsne_lnz - (noise_lnz + blip_lnz)
 
@@ -163,3 +163,41 @@ def run_starccato_analysis(
     )
     return results
 
+
+@click.command("starccato_lvk")
+@click.option('--data-path', required=True, type=str, help='Path to HDF5 data file')
+@click.option('--psd-path', required=True, type=str, help='Path to HDF5 PSD file')
+@click.option('--seed', default=None, type=int, help='Random seed')
+@click.option('--injection-model-type', default='ccsne', type=click.Choice(['ccsne', 'blip']), help='Injection model type')
+@click.option('--outdir', default='outdir', type=str, help='Output directory')
+@click.option('--verbose', is_flag=True, help='Enable verbose output')
+@click.option('--force-rerun', is_flag=True, default=True, help='Force rerun even if results exist')
+@click.option('--test-mode', is_flag=True, help='Run in test mode')
+def main(
+        data_path,
+        psd_path,
+        seed,
+        injection_model_type,
+        outdir,
+        verbose,
+        force_rerun,
+        test_mode,
+):
+    if seed is None:
+        seed = np.random.randint(0, 100000)
+    np.random.seed(seed)
+    run_starccato_analysis(
+        data_path=data_path,
+        psd_path=psd_path,
+        injection_params=dict(
+            amplitude=np.random.uniform(1e-22, 9e-22),
+            rng_key=seed,
+            z=np.random.normal(0, 1, size=32)
+        ),
+        outdir=outdir,
+        injection_model_type=injection_model_type,  # Create injection with CCSNE
+        num_samples=2000,
+        test_mode=test_mode,
+        force_rerun=force_rerun,
+        verbose=versbose
+    )

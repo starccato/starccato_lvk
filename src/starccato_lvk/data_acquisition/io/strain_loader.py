@@ -68,6 +68,10 @@ def generate_psd(data: TimeSeries) -> FrequencySeries:
 def load_strain_segment(gps_start: float, gps_end: float) -> TimeSeries:
     """Load strain data segment from HDF5 files."""
     files = _get_fnames_for_range(gps_start, gps_end)
-    return TimeSeries.read(files, format='hdf5.gwosc', start=gps_start, end=gps_end)
+    if len(files) != 0:
+        data= TimeSeries.read(files, format='hdf5.gwosc', start=gps_start, end=gps_end)
+    else:
+        data= TimeSeries.fetch_open_data("H1", gps_start, gps_end)
+    return data
 
 

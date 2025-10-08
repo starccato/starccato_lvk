@@ -1,3 +1,4 @@
+# DEPRECATED: injection made via lvk_data_prep
 from starccato_jax.waveforms import StarccatoCCSNe
 from .strain_loader import load_analysis_chunk_and_psd, _save_analysis_chunk_and_psd
 from .only_noise_data import get_noise_trigger_time
