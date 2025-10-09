@@ -5,9 +5,15 @@ from .only_noise_data import get_noise_trigger_time
 import numpy as np
 
 
-def create_injection_signal(trigger_time: float, rng: int, distance: float, outdir: str = None):
+def create_injection_signal(trigger_time, rng: int, distance: float, outdir: str = None):
+    """Inject a CCSNe signal around an index or explicit trigger time."""
+    # Normalize trigger input: allow passing an index or a GPS time directly.
+    if isinstance(trigger_time, (int, np.integer)):
+        noise_trigger_time = get_noise_trigger_time(int(trigger_time))
+    else:
+        noise_trigger_time = float(trigger_time)
+
     # 1. Load the noise data (and PSD) around the trigger time
-    noise_trigger_time = get_noise_trigger_time(trigger_time)
     data, psd = load_analysis_chunk_and_psd(noise_trigger_time)
 
     # 2. Create the CCSNe signal

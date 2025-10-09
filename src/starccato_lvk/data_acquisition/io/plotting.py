@@ -21,8 +21,11 @@ def plot(data: TimeSeries, psd: FrequencySeries, event_time: float, fname: str):
 
 
 def plot_qtransform(ts: TimeSeries, event_time: float, axes=None):
+    nyquist = ts.sample_rate.value / 2
+    # Limit upper frequency slightly below the gwpy constraint for the chosen Q-range
+    f_high = min(2048, 0.63 * nyquist)
     q_scan = ts.q_transform(
-        qrange=[4, 64], frange=[10, 2048], tres=0.002, fres=0.5, whiten=True
+        qrange=[4, 64], frange=[10, f_high], tres=0.002, fres=0.5, whiten=True
     )
     # Get time and frequency arrays
     times = q_scan.times.value - event_time  # time relative to event
@@ -67,7 +70,9 @@ def plot_analysis_timeseries(analysis_data: TimeSeries, event_time: float, ax):
     t0 = analysis_data.times.value[-1] - 1  # hardcoded trigger time to be 1 second before the last sample
     n_samps = 512
     t_offset = n_samps / 2 / fs  # 256 samples before and after t0
-    d = d.crop(t0 - t_offset, t0 + t_offset)  # 512 samples
+    crop_start = max(t0 - t_offset, d.times.value[0])
+    crop_end = min(t0 + t_offset, d.times.value[-1])
+    d = d.crop(crop_start, crop_end)
     t = d.times.value - t0
     ax.plot(t, d.value, label="Analysis Data", color="tab:orange")
     ax.axvline(0, color='red',  label='Event Time', alpha=0.3,lw=3)
