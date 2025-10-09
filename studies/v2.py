@@ -16,7 +16,7 @@ def main():
 
     # Injection parameters
     injection_params = {
-        'amplitude': 5e-22,
+        'amplitude': 1e-22,
         'rng_key': 0,
         'z': np.random.normal(0, 1, size=32)
     }
