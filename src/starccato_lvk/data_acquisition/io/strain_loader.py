@@ -13,7 +13,27 @@ from starccato_jax.waveforms import StarccatoCCSNe
 import numpy as np
 
 
-def strain_loader(trigger_time: float, outdir: str = None) -> None:
+def strain_loader(
+    trigger_time: float,
+    outdir: str = None,
+    *,
+    add_injection: bool = False,
+    distance: float = None,
+    rng=None,
+) -> None:
+    """Load strain data around ``trigger_time`` and optionally inject a signal."""
+    if add_injection:
+        if distance is None:
+            raise ValueError("distance must be provided when add_injection=True")
+        if rng is None:
+            raise ValueError("rng must be provided when add_injection=True")
+
+        # Local import avoids a circular dependency with inject_signal_into_noise.
+        from .inject_signal_into_noise import create_injection_signal
+
+        create_injection_signal(trigger_time, rng=rng, distance=distance, outdir=outdir)
+        return
+
     data, psd = load_analysis_chunk_and_psd(trigger_time)
     if outdir:
         _save_analysis_chunk_and_psd(data, psd, trigger_time, outdir)
@@ -73,5 +93,4 @@ def load_strain_segment(gps_start: float, gps_end: float) -> TimeSeries:
     else:
         data= TimeSeries.fetch_open_data("H1", gps_start, gps_end)
     return data
-
 
