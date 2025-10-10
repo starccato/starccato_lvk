@@ -14,21 +14,8 @@ from .utils import _get_fnames_for_range
 def strain_loader(
     trigger_time: float,
     outdir: str = None,
-    add_injection: bool = False,
-    distance: float = 1.0,
-    rng=None,
 ) -> None:
-    if add_injection:
-        from .inject_signal_into_noise import create_injection_signal
-
-        data, psd, _ = create_injection_signal(
-            trigger_time=trigger_time,
-            rng=rng,
-            distance=distance,
-            outdir=outdir,
-        )
-        return data, psd
-
+    """Load strain data and compute PSD around a trigger time, optionally saving to outdir."""
     data, psd = load_analysis_chunk_and_psd(trigger_time)
     if outdir:
         _save_analysis_chunk_and_psd(data, psd, trigger_time, outdir)
@@ -84,4 +71,9 @@ def generate_psd(data: TimeSeries) -> FrequencySeries:
 def load_strain_segment(gps_start: float, gps_end: float) -> TimeSeries:
     """Load strain data segment from HDF5 files."""
     files = _get_fnames_for_range(gps_start, gps_end)
-    return TimeSeries.read(files, format='hdf5.gwosc', start=gps_start, end=gps_end)
+    files_avail = [f for f in files if os.path.exists(f)]
+    if len(files_avail) == 0:
+        raise FileNotFoundError(f"No data files found for GPS range {gps_start} to {gps_end}."
+                                f" Checked files: {files}")
+    print(files_avail)
+    return TimeSeries.read(files_avail, format='hdf5.gwosc', start=gps_start, end=gps_end)
