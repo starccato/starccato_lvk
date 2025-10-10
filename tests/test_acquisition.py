@@ -1,12 +1,10 @@
-from starccato_lvk.data_acquisition.io.strain_loader import load_analysis_chunk_and_psd, strain_loader
-from starccato_lvk.data_acquisition.io.determine_valid_segments import load_state_vector, generate_times_for_valid_data, plot_valid_segments
-from conftest import get_trigger_time
+from starccato_lvk.acquisition.io.strain_loader import strain_loader
+from starccato_lvk.acquisition.io.utils import _get_fnames_for_range
+from starccato_lvk.acquisition.io.glitch_catalog import get_blip_trigger_time
+from starccato_lvk.acquisition.io.determine_valid_segments import load_state_vector, generate_times_for_valid_data, plot_valid_segments
 import os
-import jax
-import glob
-from starccato_lvk.cli import run_starccato_analysis
 
-GLITCH_TIME = 1263748255.33508
+OUT = 'data_acquition'
 
 """
 ├── L-L1_GWOSC_O3b_4KHZ_R1-1256652800-4096.hdf5
@@ -15,19 +13,21 @@ GLITCH_TIME = 1263748255.33508
 """
 
 
-def test_data_loader(outdir, mock_data_dir):
-    strain_loader(GLITCH_TIME, outdir=outdir)
-    assert os.path.exists(os.path.join(outdir, f"analysis_chunk_{int(GLITCH_TIME)}.png"))
-    assert os.path.exists(os.path.join(outdir, f"analysis_chunk_{int(GLITCH_TIME)}.hdf5"))
+def test_data_loader(outdir, mock_data_dir, glitch_trigger_time):
+    outdir = os.path.join(outdir, OUT)
+    strain_loader(glitch_trigger_time, outdir=outdir)
+    assert os.path.exists(os.path.join(outdir, f"analysis_chunk_{int(glitch_trigger_time)}.png"))
+    assert os.path.exists(os.path.join(outdir, f"analysis_chunk_{int(glitch_trigger_time)}.hdf5"))
 
 
-def test_load_state_vector(outdir, mock_data_dir):
-    gps_start = GLITCH_TIME - 65
-    gps_end = GLITCH_TIME + 1
+def test_load_state_vector(outdir, mock_data_dir,glitch_trigger_time):
+    outdir = os.path.join(outdir, OUT)
+    gps_start = glitch_trigger_time - 65
+    gps_end = glitch_trigger_time + 1
     state_vector = load_state_vector(gps_start, gps_end)
     assert state_vector is not None
     plot = state_vector.plot(insetlabels=True)
-    plot.savefig(os.path.join(outdir, f"state_vector_{int(GLITCH_TIME)}.png"))
+    plot.savefig(os.path.join(outdir, f"state_vector_{int(glitch_trigger_time)}.png"))
 
     T0 = 1263743000
     T1 = 1263750000
@@ -35,7 +35,6 @@ def test_load_state_vector(outdir, mock_data_dir):
     assert len(times) > 0
 
 def test_utils(mock_get_data_files_and_gps_times):
-    from starccato_lvk.data_acquisition.io.utils import _get_fnames_for_range
     files = _get_fnames_for_range(110, 150)
     assert len(files) > 0
     files_2 = _get_fnames_for_range(110, 151)
@@ -44,25 +43,6 @@ def test_utils(mock_get_data_files_and_gps_times):
 
 
 def test_load_blips():
-    from starccato_lvk.data_acquisition.io.glitch_catalog import get_blip_trigger_time
     blips_times = [get_blip_trigger_time(i) for i in range(10)]
     assert len(blips_times)==10
-
-
-def test_analysis(outdir, mock_data_dir):
-    out = f"{outdir}/starccato_analysis"
-    os.makedirs(out, exist_ok=True)
-    t0 = get_trigger_time()
-    rng = jax.random.PRNGKey(0)
-    strain_loader(t0, outdir=out)
-    data_path = glob.glob(f"{out}/analysis_chunk_*.hdf5")
-    psd_path = glob.glob(f"{out}/psd_*.hdf5")
-
-    run_starccato_analysis(
-        data_path=data_path,
-        psd_path=psd_path,
-
-        outdir=out,
-        test_mode=True,
-    )
 

@@ -140,7 +140,6 @@ ignore_missing_imports = true
 
 
 [project.scripts]
-get_analysis_data = "starccato_lvk.data_acquisition.main:cli_get_analysis_data"
-get_valid_times = "starccato_lvk.data_acquisition.main:cli_get_valid_times"
-collect_lvk_data = "starccato_lvk.data_acquisition.main:cli_collect_lvk_data"
-lvk_fetch = "starccato_lvk.data_acquisition.lvk_fetch:cli"
+# Main CLI entry point
+starccato-lvk = "starccato_lvk.cli:cli"
+lvk_fetch = "starccato_lvk.acquisition.lvk_fetch:cli"

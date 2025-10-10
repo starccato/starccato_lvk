@@ -1,4 +1,4 @@
-from starccato_lvk.main import run_starccato_analysis
+from starccato_lvk.cli import run_starccato_analysis
 import numpy as np
 import os
 

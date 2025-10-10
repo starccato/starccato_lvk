@@ -56,7 +56,7 @@ def _plot_marginals(samples, trues=None, color="tab:orange"):
     fig, ax = plt.subplots(figsize=figsize)
     boxplot = ax.boxplot(
         samples,
-        vert=False,
+        orientation='horizontal',
         patch_artist=True,
         showfliers=False,
         capwidths=0,

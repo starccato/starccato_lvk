@@ -2,7 +2,7 @@ import glob
 import re
 from typing import Dict
 
-from starccato_lvk.data_acquisition import config
+from starccato_lvk.acquisition import config
 
 
 def _get_data_files_and_gps_times() -> Dict[int, str]:
