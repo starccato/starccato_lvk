@@ -3,6 +3,8 @@ from starccato_lvk.data_acquisition.io.determine_valid_segments import load_stat
 from conftest import get_trigger_time
 import os
 import jax
+import glob
+from starccato_lvk.cli import run_starccato_analysis
 
 GLITCH_TIME = 1263748255.33508
 
@@ -46,7 +48,21 @@ def test_load_blips():
     blips_times = [get_blip_trigger_time(i) for i in range(10)]
     assert len(blips_times)==10
 
-def test_injection(outdir, mock_data_dir):
+
+def test_analysis(outdir, mock_data_dir):
+    out = f"{outdir}/starccato_analysis"
+    os.makedirs(out, exist_ok=True)
     t0 = get_trigger_time()
     rng = jax.random.PRNGKey(0)
-    strain_loader(t0, outdir=outdir, add_injection=True, distance=1e20, rng=rng)
+    strain_loader(t0, outdir=out)
+    data_path = glob.glob(f"{out}/analysis_chunk_*.hdf5")
+    psd_path = glob.glob(f"{out}/psd_*.hdf5")
+
+    run_starccato_analysis(
+        data_path=data_path,
+        psd_path=psd_path,
+
+        outdir=out,
+        test_mode=True,
+    )
+

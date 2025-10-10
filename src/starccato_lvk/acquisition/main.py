@@ -9,7 +9,7 @@ from tqdm import tqdm
 
 @click.command("get_analysis_data")
 @click.argument('idx', type=int, default=0)
-@click.option('--trigger_type', type=str, default='blip', help='Type of trigger: blip, noise, or signal')
+@click.option('--trigger_type', type=str, default='blip', help='Type of trigger: blip, noise')
 @click.option('--outdir', type=str, default='.', help='Output directory for analysis chunk and PSD')
 @click.option('--distance', type=float, default=1e23, help='Luminosity distance used to scale injected CCSNe waveforms')
 def cli_get_analysis_data(idx, trigger_type, outdir, distance=1e23):
@@ -21,13 +21,6 @@ def cli_get_analysis_data(idx, trigger_type, outdir, distance=1e23):
     elif trigger_type == 'noise':
         kwargs = dict(
             trigger_time=get_noise_trigger_time(idx)
-        )
-    elif trigger_type == 'signal':
-        kwargs = dict(
-            add_injection=True,
-            trigger_time=get_noise_trigger_time(idx),
-            rng=idx,
-            distance=distance,
         )
     if outdir == '.':
         outdir = f'outdir_{trigger_type}'
@@ -56,4 +49,3 @@ def cli_collect_lvk_data(num: int):
     for i in tqdm(range(num)):
         cli_get_analysis_data(i, trigger_type='blip')
         cli_get_analysis_data(i, trigger_type='noise')
-        cli_get_analysis_data(i, trigger_type='signal')
