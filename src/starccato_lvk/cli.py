@@ -27,10 +27,8 @@ from .acquisition.main import cli_collect_lvk_data, cli_get_analysis_data
 @click.group()
 @click.version_option("1.0.0")
 def cli():
-    """Starccato LVK - Gravitational Wave Analysis Toolkit
+    """Starccato LVK: VAE PE toolkit for CCSNe LnZ computation.
 
-    A comprehensive toolkit for gravitational wave data acquisition and analysis
-    using supernova and blip signal models.
     """
     pass
 
