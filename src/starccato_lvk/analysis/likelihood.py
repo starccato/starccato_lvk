@@ -40,7 +40,20 @@ def _bayesian_model(rescaled_data, starccato_model, window, rng):
     strain_amplitude = jnp.exp(log_strain_amplitude)
 
     # Generate waveform using StarCCaTo model
+    window = jnp.asarray(window)
+
     y_model_td = starccato_model.generate(z=theta.reshape(1, -1), rng=rng)[0] * strain_amplitude
+
+    window_len = window.shape[0]
+    waveform_len = y_model_td.shape[0]
+    if waveform_len > window_len:
+        y_model_td = y_model_td[:window_len]
+    elif waveform_len < window_len:
+        pad_total = window_len - waveform_len
+        pad_left = pad_total // 2
+        pad_right = pad_total - pad_left
+        y_model_td = jnp.pad(y_model_td, (pad_left, pad_right))
+
     # window the waveform to reduce edge effects
     y_model_td = y_model_td * window
 
@@ -150,5 +163,3 @@ def print_evidence_summary(results: az.InferenceData):
     print(f"Likelihood evaluations:  {n_evals:,}")
     print(f"Effective sample size:   {ess}")
     print("=" * 50)
-
-

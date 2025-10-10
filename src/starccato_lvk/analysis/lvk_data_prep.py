@@ -1,7 +1,7 @@
 import numpy as np
 import jax
 
-from typing import Dict
+from typing import Dict, Optional
 import bilby
 from bilby.core.utils import nfft
 from bilby.gw.detector import PowerSpectralDensity
@@ -12,7 +12,6 @@ from gwpy.frequencyseries import FrequencySeries
 # Constants
 FMAX = 1024.0
 FLOW = 100.0
-SAMPLING_FREQUENCY = 4096.0
 
 # Rescaling factors to avoid float32 precision issues
 STRAIN_SCALE = 1e21  # Scale strain from ~1e-22 to ~1e-1
@@ -87,6 +86,14 @@ class LvkDataPrep:
         psd_data = FrequencySeries.read(psd_path, format="hdf5")
 
         instance._setup_interferometer(data, psd_data)
+
+        freq_len = instance.ifo.frequency_array.shape[0]
+        psd_len = instance.ifo.power_spectral_density_array.shape[0]
+        if freq_len != psd_len:
+            raise ValueError(
+                f"Frequency-domain data/PSD length mismatch: "
+                f"{freq_len} (strain) vs {psd_len} (PSD)"
+            )
         return instance
 
     @classmethod
@@ -143,29 +150,57 @@ class LvkDataPrep:
         z = self.injection_params.get('z', None)
         rng_key = self.injection_params.get('rng_key', 0)
 
-        if z is not None:
-            waveform = self.waveform_model.generate(z=z, rng=jax.random.PRNGKey(rng_key))
-        else:
-            waveform = self.waveform_model.generate(n=1, rng=jax.random.PRNGKey(rng_key))[0]
+        rng = jax.random.PRNGKey(rng_key)
+        if z is None:
+            z = jax.random.normal(rng, (self.waveform_model.latent_dim,))
+        z = np.asarray(z).reshape(1, -1)
+        self.injection_params['z'] = z[0]  # Store generated z if not provided
+
+        waveform = self.waveform_model.generate(z=z, rng=rng)[0]
 
         return np.array(waveform * amplitude, dtype=np.float64)
 
+    def _align_injection_to_data(
+        self,
+        data: TimeSeries,
+        injection: np.ndarray,
+    ) -> TimeSeries:
+        """Return a TimeSeries containing the injection centred within `data`."""
+        injection = np.asarray(injection, dtype=np.float64).ravel()
+        n_data = len(data.value)
+        n_inj = injection.shape[0]
+
+        if n_inj > n_data:
+            raise ValueError(
+                "Injection waveform is longer than the available strain segment."
+            )
+
+        padded = np.zeros(n_data, dtype=np.float64)
+        start = (n_data - n_inj) // 2
+        end = start + n_inj
+        padded[start:end] = injection
+
+        return TimeSeries(padded, t0=data.t0, dt=data.dt, unit=data.unit)
+
     def _set_interferometer_from_data(self, data, psd_data, injection=None):
         """Set up interferometer with data, PSD, and optional injection."""
+        data_for_ifo = data
+        injection_aligned: Optional[np.ndarray] = None
         if injection is not None:
             duration = data.duration.value
             if 2 * self.roll_off > duration:
                 raise ValueError("2 * roll-off is longer than segment duration.")
 
-            # Crop data to match injection
-            data = data[:len(injection)]
+            injection_ts = self._align_injection_to_data(data, injection)
+            data_for_ifo = data + injection_ts
+            injection_aligned = injection_ts.value
 
         # Create interferometer
         ifo = bilby.gw.detector.get_empty_interferometer(self.detector)
         ifo.strain_data.roll_off = self.roll_off
 
         # Set strain data
-        ifo.strain_data.set_from_gwpy_timeseries(data)
+        ifo.strain_data.set_from_gwpy_timeseries(data_for_ifo)
         td_window = ifo.strain_data.time_domain_window(roll_off=self.roll_off)
 
         # Handle PSD - check if it's TimeSeries or FrequencySeries
@@ -181,16 +216,6 @@ class LvkDataPrep:
             frequency_array=ifo.frequency_array, psd_array=psd_interp
         )
 
-        # Handle injection
-        snr_optimal = None
-        snr_matched = None
-        injection_aligned = injection
-
-        if injection is not None:
-            # Inject signal (additive model)
-            ifo.strain_data.set_from_gwpy_timeseries(data + injection)
-
-
         ifo.minimum_frequency = FLOW
         ifo.maximum_frequency = FMAX
 
@@ -203,6 +228,8 @@ class LvkDataPrep:
         strain_fd_orig = self.ifo.strain_data.frequency_domain_strain
         psd_orig = self.ifo.power_spectral_density_array
         frequency_array = self.ifo.frequency_array
+        if frequency_array.size < 2:
+            raise ValueError("Frequency array must contain at least two samples.")
 
         # Apply rescaling
         strain_td_scaled = (strain_td_orig * self.strain_scale).astype(np.float32)
@@ -215,8 +242,8 @@ class LvkDataPrep:
             'strain_fd': strain_fd_scaled,
             'psd_array': psd_scaled,
             'frequency_array': frequency_array.astype(np.float32),
-            'sampling_frequency': self.ifo.strain_data.sampling_frequency,
-            'df': frequency_array[1] - frequency_array[0],
+            'sampling_frequency': float(self.ifo.strain_data.sampling_frequency),
+            'df': float(frequency_array[1] - frequency_array[0]),
             'strain_scale': self.strain_scale,
             'psd_scale': self.psd_scale
         }
@@ -226,13 +253,14 @@ class LvkDataPrep:
     def get_snrs(self):
         """Get computed SNR values."""
         return {
-            'optimal_snr': self.snr_optimal,
-            'matched_snr': self.snr_matched
+            'optimal_snr': float(self.snr_optimal) if self.snr_optimal is not None else np.nan,
+            'matched_snr': float(self.snr_matched) if self.snr_matched is not None else np.nan,
         }
 
-    def compute_snr(self, waveform:np.ndarray):
+    def compute_snr(self, waveform: np.ndarray):
         """Compute optimal and matched SNR for a given waveform."""
-        freq_waveform, _ = nfft(waveform, SAMPLING_FREQUENCY)
+        sampling_frequency = float(self.ifo.strain_data.sampling_frequency)
+        freq_waveform, _ = nfft(waveform, sampling_frequency)
         snr_optimal = np.sqrt(self.ifo.optimal_snr_squared(signal=freq_waveform)).real
         snr_matched = self.ifo.matched_filter_snr(signal=freq_waveform)
         return snr_optimal, np.abs(snr_matched)

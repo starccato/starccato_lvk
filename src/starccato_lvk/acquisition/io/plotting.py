@@ -22,7 +22,7 @@ def plot(data: TimeSeries, psd: FrequencySeries, event_time: float, fname: str):
 
 def plot_qtransform(ts: TimeSeries, event_time: float, axes=None):
     q_scan = ts.q_transform(
-        qrange=[4, 64], frange=[10, 2048], tres=0.002, fres=0.5, whiten=True
+        qrange=[4, 64], frange=[10, 1024], tres=0.002, fres=0.5, whiten=True
     )
     # Get time and frequency arrays
     times = q_scan.times.value - event_time  # time relative to event

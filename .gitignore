@@ -3,6 +3,8 @@ __pycache__/
 *.py[cod]
 *$py.class
 *_version.py
+test_outdir
+*outdir*
 # C extensions
 *.so
 *.txt
