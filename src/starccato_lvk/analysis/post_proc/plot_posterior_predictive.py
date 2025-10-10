@@ -86,6 +86,10 @@ def _plot_time_domain_posterior(ax, data, color:str, label_prefix="", alpha=0.3,
         inj = data['injection_signal']
         ax.plot(t, inj, color=SIGNAL_COL, label='Injected Signal', linewidth=2, alpha=0.9, zorder=-10)
 
+
+    # center at t0, show ±0.2s
+    ax.set_xlim(t0-0.2, t0+0.2)
+
     ax.set_xlabel(f"Time [s] from GPS {t0}")
     ax.set_ylabel("Strain")
     ax.grid(False)

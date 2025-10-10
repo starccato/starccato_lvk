@@ -4,13 +4,13 @@ import os
 from typing import Callable, Optional
 
 import h5py
+import numpy as np
 from gwpy.frequencyseries import FrequencySeries
 from gwpy.timeseries import TimeSeries
 
 from .plotting import plot
 from .utils import _get_fnames_for_range
 from .. import config
-
 
 DataFetcher = Callable[[float, float], TimeSeries]
 
@@ -20,7 +20,7 @@ def strain_loader(
     outdir: str = None,
     data_fetcher: Optional[DataFetcher] = None,
     detector: Optional[str] = None,
-) -> None:
+) -> tuple[TimeSeries, FrequencySeries]:
     """Load strain data and compute PSD around a trigger time, optionally saving to outdir.
 
     Args:
@@ -61,20 +61,23 @@ def load_analysis_chunk_and_psd(
     return analysis_chunk, psd
 
 
-def _save_analysis_chunk_and_psd(analysis_chunk, psd, trigger_time: float, outdir: str, injection=None) -> None:
+def _save_analysis_chunk_and_psd(
+    analysis_chunk: TimeSeries,
+    psd: FrequencySeries,
+    trigger_time: float,
+    outdir: str,
+    injection=None,
+) -> None:
     os.makedirs(outdir, exist_ok=True)
-    fname = os.path.join(outdir, f"analysis_chunk_{int(trigger_time)}.png")
-    plot(analysis_chunk, psd, trigger_time, fname)
-    # save the analysis chunk and psd
-    analysis_fn = os.path.join(outdir, f"analysis_chunk_{int(trigger_time)}.hdf5")
-    psd_fn = os.path.join(outdir, f"psd_{int(trigger_time)}.hdf5")
-    analysis_chunk.write(analysis_fn, format='hdf5', overwrite=True)
-    psd.write(psd_fn, format='hdf5', overwrite=True)
 
-    if injection is not None:
-        injection_fn = os.path.join(outdir, f"injection_{int(trigger_time)}.hdf5")
-        with h5py.File(injection_fn, 'w') as f:
-            f.create_dataset('injection', data=injection)
+    # Save diagnostic plot (optional artefact)
+    plot_fname = os.path.join(outdir, f"analysis_chunk_{int(trigger_time)}.png")
+    plot(analysis_chunk, psd, trigger_time, plot_fname)
+
+    bundle_path = os.path.join(outdir, f"analysis_bundle_{int(trigger_time)}.hdf5")
+    _write_analysis_bundle(bundle_path, analysis_chunk, psd, trigger_time, injection)
+
+    return bundle_path
 
 
 def generate_psd(data: TimeSeries) -> FrequencySeries:
@@ -140,3 +143,54 @@ def load_strain_segment(
                     "to a valid instrument."
                 ) from fetch_err
         raise
+
+
+def _write_analysis_bundle(
+    bundle_path: str,
+    analysis_chunk: TimeSeries,
+    psd: FrequencySeries,
+    trigger_time: float,
+    injection=None,
+) -> None:
+    with h5py.File(bundle_path, "w") as f:
+        f.attrs["trigger_time"] = float(trigger_time)
+
+        strain_grp = f.create_group("strain")
+        strain_grp.create_dataset("values", data=analysis_chunk.value)
+        strain_grp.attrs["t0"] = float(analysis_chunk.times.value[0])
+        strain_grp.attrs["dt"] = float(analysis_chunk.dt.value)
+        strain_grp.attrs["unit"] = str(analysis_chunk.unit)
+        strain_grp.attrs["sample_rate"] = float(analysis_chunk.sample_rate.value)
+
+        psd_grp = f.create_group("psd")
+        psd_grp.create_dataset("values", data=psd.value)
+        psd_grp.create_dataset("frequencies", data=psd.frequencies.value)
+        psd_grp.attrs["unit"] = str(psd.unit)
+
+        if injection is not None:
+            extras = f.create_group("extras")
+            extras.create_dataset("injection", data=np.asarray(injection))
+
+
+def load_analysis_bundle(bundle_path: str) -> tuple[TimeSeries, FrequencySeries, dict]:
+    with h5py.File(bundle_path, "r") as f:
+        metadata = dict(f.attrs)
+
+        strain_grp = f["strain"]
+        strain_values = strain_grp["values"][...]
+        t0 = float(strain_grp.attrs["t0"])
+        dt = float(strain_grp.attrs["dt"])
+        unit = strain_grp.attrs.get("unit")
+        times = t0 + np.arange(strain_values.shape[0]) * dt
+        strain = TimeSeries(strain_values, times=times, unit=unit)
+
+        psd_grp = f["psd"]
+        psd_values = psd_grp["values"][...]
+        freqs = psd_grp["frequencies"][...]
+        psd_unit = psd_grp.attrs.get("unit")
+        psd = FrequencySeries(psd_values, frequencies=freqs, unit=psd_unit)
+
+        if "extras" in f and "injection" in f["extras"]:
+            metadata["injection"] = f["extras"]["injection"][...]
+
+    return strain, psd, metadata

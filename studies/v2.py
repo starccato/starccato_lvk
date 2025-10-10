@@ -1,4 +1,4 @@
-from starccato_lvk.cli import run_starccato_analysis
+from starccato_lvk.analysis.main import run_starccato_analysis
 import numpy as np
 import os
 
@@ -10,8 +10,7 @@ def main():
 
     # Define paths and parameters
     HERE = os.path.dirname(os.path.abspath(__file__))
-    data_path = f"{HERE}/test_data/analysis_chunk_1256676910.hdf5"
-    psd_path = f"{HERE}/test_data/psd_1256676910.hdf5"
+    data_path = f"{HERE}/test_data/analysis_bundle_1256676910.hdf5"
     outdir = "outdir_comparison"
 
     # Injection parameters
@@ -24,7 +23,7 @@ def main():
     # Run comparison analysis
     run_starccato_analysis(
         data_path=data_path,
-        psd_path=psd_path,
+        psd_path=None,
         injection_params=injection_params,
         outdir=outdir,
         injection_model_type='ccsne',  # Create injection with CCSNE

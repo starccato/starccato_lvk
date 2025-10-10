@@ -17,7 +17,8 @@ def plot(data: TimeSeries, psd: FrequencySeries, event_time: float, fname: str):
     plot_qtransform(data, event_time, ax3)
     plt.suptitle(f"Event Time: {event_time:.3f} GPS", fontsize=16)
     plt.tight_layout()
-    plt.savefig(fname, bbox_inches='tight')
+    fig.savefig(fname, bbox_inches='tight')
+    plt.close(fig)
 
 
 def plot_qtransform(ts: TimeSeries, event_time: float, axes=None):

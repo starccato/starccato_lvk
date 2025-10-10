@@ -17,7 +17,7 @@ def test_data_loader(outdir, mock_data_dir, glitch_trigger_time):
     outdir = os.path.join(outdir, OUT)
     strain_loader(glitch_trigger_time, outdir=outdir)
     assert os.path.exists(os.path.join(outdir, f"analysis_chunk_{int(glitch_trigger_time)}.png"))
-    assert os.path.exists(os.path.join(outdir, f"analysis_chunk_{int(glitch_trigger_time)}.hdf5"))
+    assert os.path.exists(os.path.join(outdir, f"analysis_bundle_{int(glitch_trigger_time)}.hdf5"))
 
 
 def test_load_state_vector(outdir, mock_data_dir,glitch_trigger_time):
@@ -45,4 +45,3 @@ def test_utils(mock_get_data_files_and_gps_times):
 def test_load_blips():
     blips_times = [get_blip_trigger_time(i) for i in range(10)]
     assert len(blips_times)==10
-
