@@ -1,12 +1,13 @@
 import csv
-import numpy as np
 import os
+from typing import Dict, Any
+
+import arviz as az
+import numpy as np
 from starccato_jax.waveforms import MODELS, get_model
 from .lvk_data_prep import LvkDataPrep
 from .post_proc import plot_posterior_predictive, plot_diagnostics, plot_posterior_comparison
 from .likelihood import run_inference
-import arviz as az
-from typing import Dict, Any
 
 
 def run_starccato_analysis(
@@ -17,7 +18,7 @@ def run_starccato_analysis(
         injection_params: Dict[str, Any]={},
         num_samples: int = 2000,
         force_rerun: bool = False,
-        test_mode:bool = False,
+        test_mode: bool = False,
         verbose: bool = False,
         save_artifacts: bool = True,
 ) -> Dict[str, az.InferenceData]:
