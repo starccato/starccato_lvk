@@ -9,6 +9,8 @@ from bilby.gw.detector import PowerSpectralDensity
 from gwpy.timeseries import TimeSeries
 from gwpy.frequencyseries import FrequencySeries
 
+from starccato_lvk.acquisition.io.strain_loader import load_analysis_bundle
+
 # Constants
 FMAX = 1024.0
 FLOW = 100.0
@@ -66,7 +68,7 @@ class LvkDataPrep:
         self.lnz_noise = None
 
     @classmethod
-    def load(cls, data_path, psd_path, **kwargs):
+    def load(cls, data_path, psd_path=None, **kwargs):
         """
         Load data from HDF5 files.
 
@@ -81,11 +83,29 @@ class LvkDataPrep:
         """
         instance = cls(**kwargs)
 
-        # Load data
-        data = TimeSeries.read(data_path, format="hdf5")
-        psd_data = FrequencySeries.read(psd_path, format="hdf5")
+        bundle_loaded = False
+        data = psd_data = metadata = None
+
+        # Attempt to load bundled file first
+        try:
+            data, psd_data, metadata = load_analysis_bundle(data_path)
+            bundle_loaded = True
+        except (OSError, KeyError, ValueError):
+            if psd_path is None:
+                raise FileNotFoundError(
+                    "PSD path not provided and bundled analysis file could not be parsed."
+                ) from None
+
+        if not bundle_loaded:
+            data = TimeSeries.read(data_path, format="hdf5")
+            psd_data = FrequencySeries.read(psd_path, format="hdf5")
+            metadata = {}
 
         instance._setup_interferometer(data, psd_data)
+
+        if metadata and metadata.get("injection") is not None:
+            instance.injection_signal = metadata["injection"]
+            instance.snr_optimal, instance.snr_matched = instance._set_ifo_snrs()
 
         freq_len = instance.ifo.frequency_array.shape[0]
         psd_len = instance.ifo.power_spectral_density_array.shape[0]

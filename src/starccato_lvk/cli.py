@@ -9,8 +9,11 @@ Usage Examples:
     # Acquire data for a specific trigger
     python -m starccato_lvk.cli acquire data 123 --trigger-type blip
 
-    # Run analysis on data files
-    python -m starccato_lvk.cli run data.hdf5 psd.hdf5 ./output
+    # Run analysis on bundled data
+    python -m starccato_lvk.cli run analysis_bundle.hdf5 ./output
+
+    # Run analysis with separate strain/PSD files
+    python -m starccato_lvk.cli run analysis_chunk.hdf5 ./output --psd-path psd.hdf5
 
     # View help for any command
     python -m starccato_lvk.cli --help
@@ -93,8 +96,13 @@ def acquire_batch(num_samples, outdir):
 
 @cli.command(name="run")
 @click.argument("data_path", type=click.Path(exists=True))
-@click.argument("psd_path", type=click.Path(exists=True))
 @click.argument("outdir", type=click.Path(file_okay=False, dir_okay=True))
+@click.option(
+    "--psd-path",
+    type=click.Path(exists=True),
+    default=None,
+    help="Optional PSD file. If omitted, the data file is treated as an analysis bundle.",
+)
 @click.option(
     "--injection-model",
     type=click.Choice(["ccsne", "blip"]),
@@ -131,7 +139,6 @@ def acquire_batch(num_samples, outdir):
 )
 def run_command(
     data_path: str,
-    psd_path: str,
     outdir: str,
     injection_model: str | None,
     num_samples: int,
@@ -139,6 +146,7 @@ def run_command(
     test_mode: bool,
     verbose: bool,
     save_artifacts: bool,
+    psd_path: str | None,
 ) -> None:
     """Run supernova signal analysis on LVK data."""
 

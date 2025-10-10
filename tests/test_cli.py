@@ -77,8 +77,9 @@ def test_run_command(monkeypatch, tmp_path):
         [
             "run",
             str(data_file),
-            str(psd_file),
             str(outdir),
+            "--psd-path",
+            str(psd_file),
             "--injection-model",
             "ccsne",
             "--num-samples",
@@ -101,3 +102,41 @@ def test_run_command(monkeypatch, tmp_path):
     assert called["verbose"] is True
     assert called["save_artifacts"] is False
 
+
+def test_run_command_bundle(monkeypatch, tmp_path):
+    runner = CliRunner()
+    called = {}
+
+    def fake_run_starccato_analysis(
+        data_path,
+        psd_path,
+        outdir,
+        injection_model_type,
+        num_samples,
+        force_rerun,
+        test_mode,
+        verbose,
+        save_artifacts,
+    ):
+        called.update(locals())
+
+    monkeypatch.setattr("starccato_lvk.analysis.main.run_starccato_analysis", fake_run_starccato_analysis)
+
+    bundle_file = tmp_path / "analysis_bundle.hdf5"
+    bundle_file.write_text("bundle")
+    outdir = tmp_path / "output"
+    outdir.mkdir()
+
+    result = runner.invoke(
+        cli.cli,
+        [
+            "run",
+            str(bundle_file),
+            str(outdir),
+            "--skip-artifacts",
+        ],
+    )
+    assert result.exit_code == 0
+    assert called["data_path"] == str(bundle_file)
+    assert called["psd_path"] is None
+    assert called["save_artifacts"] is False

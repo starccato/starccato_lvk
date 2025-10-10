@@ -11,8 +11,11 @@ Typical usage:
 # Acquire 100 segments (noise + blip) into ./lvk_data
 collect_lvk_data 100
 
-# Run Starccato analysis on an analysis/PSD pair
-run_starccato_analysis analysis_chunk.hdf5 psd.hdf5 ./outdir
+# Run Starccato analysis on a bundled strain/PSD file
+python -m starccato_lvk.cli run analysis_bundle.hdf5 ./outdir
+
+# (Optional) run with separate strain/PSD files
+python -m starccato_lvk.cli run analysis_chunk.hdf5 ./outdir --psd-path psd.hdf5
 ```
 
 See `docs/` and `src/starccato_lvk/acquisition/README.md` for more details on configuration and advanced options.

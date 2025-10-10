@@ -12,8 +12,8 @@ from .likelihood import run_inference
 
 def run_starccato_analysis(
         data_path: str,
-        psd_path: str,
-        outdir: str,
+        psd_path: str | None = None,
+        outdir: str = "outdir",
         injection_model_type: str = None,
         injection_params: Dict[str, Any]={},
         num_samples: int = 2000,
@@ -28,9 +28,9 @@ def run_starccato_analysis(
     Parameters:
     -----------
     data_path : str
-        Path to the HDF5 data file
-    psd_path : str
-        Path to the HDF5 PSD file
+        Path to the HDF5 data file or bundled analysis file
+    psd_path : str, optional
+        Path to the HDF5 PSD file (omit when using bundled data)
     injection_params : Dict[str, Any]
         Dictionary containing injection parameters (amplitude, rng_key, z)
     outdir : str
@@ -74,7 +74,8 @@ def run_starccato_analysis(
     print(f"{'=' * 60}")
 
     data = LvkDataPrep.load(
-        data_path, psd_path,
+        data_path,
+        psd_path,
         waveform_model=injection_model,
         injection_params=injection_params
     )

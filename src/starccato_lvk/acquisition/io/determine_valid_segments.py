@@ -92,19 +92,20 @@ def load_state_vector(gps_start: float, gps_end: float) -> StateVector:
 
 
 def plot_valid_segments(valid_segments: np.ndarray, outdir: str = None):
-    plt.figure(figsize=(10, 5))
+    fig, ax = plt.subplots(figsize=(10, 5))
     for start, stop in valid_segments:
-        plt.plot(
+        ax.plot(
             [start, stop], [0, 0], color='green', linewidth=30,
             solid_capstyle='butt', marker='|', markersize=35,
         )
         # draw a vertical line at the start and stop of each segment
-        plt.axvline(x=start, color='red', linestyle='--', linewidth=1, label='Start Time')
-        plt.axvline(x=stop, color='blue', linestyle='--', linewidth=1, label='Start Time')
+        ax.axvline(x=start, color='red', linestyle='--', linewidth=1, label='Start Time')
+        ax.axvline(x=stop, color='blue', linestyle='--', linewidth=1, label='Start Time')
 
-    plt.yticks([])
-    plt.grid(False)
-    plt.xlabel('GPS Time')
-    plt.ylabel('Valid Segment')
-    plt.title('Valid Segments for Data Acquisition')
-    plt.savefig(os.path.join(outdir, f"valid_segments_{valid_segments[0, 0]}-{valid_segments[-1, -1]}.png"))
+    ax.set_yticks([])
+    ax.grid(False)
+    ax.set_xlabel('GPS Time')
+    ax.set_ylabel('Valid Segment')
+    ax.set_title('Valid Segments for Data Acquisition')
+    fig.savefig(os.path.join(outdir, f"valid_segments_{valid_segments[0, 0]}-{valid_segments[-1, -1]}.png"))
+    plt.close(fig)
