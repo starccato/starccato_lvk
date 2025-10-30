@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 import jax
 import jax.numpy as jnp
 import numpy as np
-from jimgw.core.single_event.waveform import Waveform
+from ..jimgw.core.single_event.waveform import Waveform
 
 from starccato_jax.starccato_model import StarccatoModel
 

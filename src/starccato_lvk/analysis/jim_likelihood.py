@@ -18,30 +18,7 @@ from numpyro.infer import MCMC, NUTS, init_to_uniform
 from numpyro.util import enable_x64
 from numpyro.infer.util import log_density
 
-try:
-    from jimgw.likelihood import TransientLikelihoodFD
-except ModuleNotFoundError:
-    try:
-        optim_module = importlib.import_module("flowMC.strategy.optimization")
-    except ImportError:
-        optim_module = types.ModuleType("flowMC.strategy.optimization")
-        flowmc_strategy = sys.modules.setdefault("flowMC.strategy", types.ModuleType("flowMC.strategy"))
-        flowmc_strategy.optimization = optim_module
-        flowmc_module = sys.modules.setdefault("flowMC", types.ModuleType("flowMC"))
-        flowmc_module.strategy = flowmc_strategy
-        sys.modules["flowMC.strategy.optimization"] = optim_module
-    if not hasattr(optim_module, "AdamOptimization"):
-        class AdamOptimization:  # pragma: no cover - fallback stub
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def optimize(self, *args, **kwargs):  # pragma: no cover - fallback stub
-                raise NotImplementedError(
-                    "AdamOptimization is unavailable; install flowMC>=0.4 for optimisation support."
-                )
-
-        optim_module.AdamOptimization = AdamOptimization
-    from jimgw.core.single_event.likelihood import BaseTransientLikelihoodFD as TransientLikelihoodFD
+from ..jimgw.core.single_event.likelihood import BaseTransientLikelihoodFD as TransientLikelihoodFD
 
 
 jax.config.update("jax_enable_x64", True)
