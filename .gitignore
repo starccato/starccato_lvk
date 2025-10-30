@@ -183,3 +183,11 @@ cython_debug/
 *.png
 *.hdf5
 *.h5
+
+batch_dir
+outdir
+
+noise
+test_debug
+signal
+glitch

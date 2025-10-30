@@ -1,7 +1,8 @@
 import arviz
-import numpy as np
 import matplotlib.pyplot as plt
 import jax
+import numpy as np
+from gwpy.timeseries import TimeSeries
 
 from bilby.core.utils import nfft
 from bilby.gw import utils as gwutils
@@ -30,19 +31,19 @@ def _extract_data_from_arviz(inf_obj):
     t0 = float(inf_obj.constant_data.start_time.values[0])
 
     # Observational data
-    strain_td_rescaled = inf_obj.observed_data.strain_td.values
-    strain_fd_rescaled = inf_obj.observed_data.strain_fd.values
-    psd_array_rescaled = inf_obj.observed_data.psd_array.values
-    freqs = inf_obj.constant_data.frequency_array.values
-    t = inf_obj.constant_data.time_array.values
+    strain_td_rescaled = np.asarray(inf_obj.observed_data.strain_td.values).ravel()
+    strain_fd_rescaled = np.asarray(inf_obj.observed_data.strain_fd.values)
+    psd_array_rescaled = np.asarray(inf_obj.observed_data.psd_array.values)
+    freqs = np.asarray(inf_obj.constant_data.frequency_array.values)
+    t_rel = np.asarray(inf_obj.constant_data.time_array.values).ravel()
 
     # Convert back to original units for plotting
     strain = strain_td_rescaled / strain_scale
     asd = np.sqrt(np.clip(psd_array_rescaled / psd_scale, 1e-50, None))
 
     # Extract pre-computed posterior predictive quantiles
-    pp_quantiles = inf_obj.constant_data.strain_td_quantiles.values
-    pp_quantiles_fd = inf_obj.constant_data.strain_fd_quantiles.values
+    pp_quantiles = np.asarray(inf_obj.constant_data.strain_td_quantiles.values)
+    pp_quantiles_fd = np.asarray(inf_obj.constant_data.strain_fd_quantiles.values)
 
     model_name = inf_obj.attrs.get('model_name', 'Model')
 
@@ -57,40 +58,57 @@ def _extract_data_from_arviz(inf_obj):
         'strain_fd_rescaled': strain_fd_rescaled,
         'asd': asd,
         'freqs': freqs,
-        't': t,
+        't': t_rel,
+        't_abs': t_rel + t0,
         'pp_quantiles': pp_quantiles,
         'pp_quantiles_fd': pp_quantiles_fd,  # Add frequency domain quantiles
-        'model_name': model_name
+        'model_name': model_name,
+        'strain_series': TimeSeries(strain, times=t_rel + t0),
     }
 
     # Add injection signal if available
     if 'injection_signal' in inf_obj.constant_data:
-        data['injection_signal'] = inf_obj.constant_data.injection_signal.values
+        inj = np.asarray(inf_obj.constant_data.injection_signal.values).ravel()
+        data['injection_signal'] = inj
+        data['injection_series'] = TimeSeries(inj, times=t_rel + t0)
+
+    # Time array is already relative to the trigger (centered in preprocessing step)
+    data['t'] = t_rel
 
     return data
 
 
-def _plot_time_domain_posterior(ax, data, color:str, label_prefix="", alpha=0.3, plot_injection=True):
+def _plot_time_domain_posterior(ax, data, color:str, label_prefix="", alpha=0.3,
+                                plot_injection=True, plot_data=True):
     """Plot time domain posterior predictive on given axes."""
     t = data['t']
     pp_quantiles = data['pp_quantiles']
-    t0 = data['t0']
+    strain = data.get('strain')
+    strain_ts = data.get('strain_series')
 
-    # Plot 90% CI as shaded region
+    # Plot observed strain if requested
+    if plot_data and strain is not None:
+        ifo_label = data.get('ifo_name', 'Data')
+        ax.plot(t, strain, color=DATA_COL, alpha=0.6, linewidth=1.0,
+                label=f'{ifo_label} Data'.strip())
+
+    # 1-sigma credible interval
+    ci_label = f"{label_prefix}68% CI".strip()
+    median_label = f"{label_prefix}Median".strip()
     ax.fill_between(t, pp_quantiles[0], pp_quantiles[2], color=color, alpha=alpha,
-                    label=label_prefix, linewidth=0)
-    ax.plot(t, pp_quantiles[1], color=color, alpha=0.8, linewidth=1.5)
+                    label=ci_label if ci_label else None, linewidth=0)
+    ax.plot(t, pp_quantiles[1], color=color, alpha=0.8, linewidth=1.5,
+            label=median_label if median_label else None)
 
     # Plot injection signal if available and requested
     if plot_injection and 'injection_signal' in data:
-        inj = data['injection_signal']
+        inj = np.asarray(data['injection_signal']).ravel()
         ax.plot(t, inj, color=SIGNAL_COL, label='Injected Signal', linewidth=2, alpha=0.9, zorder=-10)
 
+    # Use the full available time span
+    ax.set_xlim(float(np.min(t)), float(np.max(t)))
 
-    # center at t0, show ±0.2s
-    ax.set_xlim(t0-0.2, t0+0.2)
-
-    ax.set_xlabel(f"Time [s] from GPS {t0}")
+    ax.set_xlabel('Time [s] relative to trigger')
     ax.set_ylabel("Strain")
     ax.grid(False)
 
@@ -121,16 +139,17 @@ def _plot_frequency_domain_posterior(ax, data, color:str, label_prefix="", alpha
     # Use pre-computed frequency domain quantiles
     pp_lower_fd, pp_median_fd, pp_upper_fd = pp_quantiles_fd
 
-    # Plot 90% CI as shaded region
+    ci_label = f"{label_prefix}68% CI".strip()
+    median_label = f"{label_prefix}Median".strip()
     ax.fill_between(freqs[mask_s], pp_lower_fd[mask_s], pp_upper_fd[mask_s],
                     color=color, alpha=alpha,
-                    label=label_prefix, linewidth=0)
+                    label=ci_label if ci_label else None, linewidth=0)
     ax.loglog(freqs[mask_s], pp_median_fd[mask_s], color=color, alpha=0.8,
-              linewidth=1.5)
+              linewidth=1.5, label=median_label if median_label else None)
 
     # Plot injection signal if available and requested
     if plot_injection and 'injection_signal' in data:
-        inj = data['injection_signal']
+        inj = np.asarray(data['injection_signal']).ravel()
         freq_sig, _ = nfft(inj, sampling_frequency)
         asd_sig = gwutils.asd_from_freq_series(freq_data=freq_sig, df=df)
         ax.loglog(freqs[mask_s], asd_sig[mask_s], color=SIGNAL_COL, linewidth=2, alpha=0.9,
@@ -188,9 +207,11 @@ def plot_posterior_comparison(ccsne_obj, glitch_obj, fname="comparison.pdf"):
 
     # Plot time domain - data and injection only once (from first object)
     _plot_time_domain_posterior(ax_time, ccsn_data, color=CCSN_COL,
-                                label_prefix="CCSN ", plot_injection=True)
+                                label_prefix="CCSN ", plot_injection=True,
+                                plot_data=True)
     _plot_time_domain_posterior(ax_time, glitch_data, color=GLITCH_COL,
-                                label_prefix="Glitch ",  plot_injection=False)
+                                label_prefix="Glitch ",  plot_injection=False,
+                                plot_data=False)
 
     # Add SNR comparisons if available
     snr_texts = []

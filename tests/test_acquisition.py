@@ -1,4 +1,4 @@
-from starccato_lvk.acquisition.io.strain_loader import strain_loader
+from starccato_lvk.acquisition.io.strain_loader import strain_loader, load_analysis_bundle
 from starccato_lvk.acquisition.io.utils import _get_fnames_for_range
 from starccato_lvk.acquisition.io.glitch_catalog import get_blip_trigger_time
 from starccato_lvk.acquisition.io.determine_valid_segments import load_state_vector, generate_times_for_valid_data, plot_valid_segments
@@ -18,6 +18,11 @@ def test_data_loader(outdir, mock_data_dir, glitch_trigger_time):
     strain_loader(glitch_trigger_time, outdir=outdir)
     assert os.path.exists(os.path.join(outdir, f"analysis_chunk_{int(glitch_trigger_time)}.png"))
     assert os.path.exists(os.path.join(outdir, f"analysis_bundle_{int(glitch_trigger_time)}.hdf5"))
+    bundle_path = os.path.join(outdir, f"analysis_bundle_{int(glitch_trigger_time)}.hdf5")
+    analysis_chunk, _, metadata = load_analysis_bundle(bundle_path)
+    assert len(analysis_chunk.value) == 512
+    assert 'full_strain' in metadata
+    assert len(metadata['full_strain'].value) > len(analysis_chunk.value)
 
 
 def test_load_state_vector(outdir, mock_data_dir,glitch_trigger_time):

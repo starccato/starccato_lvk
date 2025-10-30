@@ -13,6 +13,7 @@ from .utils import _get_fnames_for_range
 from .. import config
 
 DataFetcher = Callable[[float, float], TimeSeries]
+ANALYSIS_SAMPLES = 512
 
 
 def strain_loader(
@@ -29,41 +30,65 @@ def strain_loader(
         data_fetcher: Custom callable returning a `TimeSeries` for (start, end) GPS times.
         detector: Detector code (e.g. "H1"/"L1") to use when falling back to GWOSC fetches.
     """
-    data, psd = load_analysis_chunk_and_psd(
+    analysis_chunk, psd, full_data = load_analysis_chunk_and_psd(
         trigger_time,
         data_fetcher=data_fetcher,
         detector=detector,
     )
     if outdir:
-        _save_analysis_chunk_and_psd(data, psd, trigger_time, outdir)
-    return data, psd
+        _save_analysis_chunk_and_psd(analysis_chunk, psd, full_data, trigger_time, outdir)
+    return analysis_chunk, psd
 
 
 def load_analysis_chunk_and_psd(
     trigger_time: float,
     data_fetcher: Optional[DataFetcher] = None,
     detector: Optional[str] = None,
-) -> (TimeSeries, FrequencySeries):
+) -> tuple[TimeSeries, FrequencySeries, TimeSeries]:
     """Load strain data and compute PSD around a trigger time."""
     analysis_start = trigger_time - 1
     gps_start = analysis_start - 65
     gps_end = trigger_time + 1
-    data = load_strain_segment(
+    full_data = load_strain_segment(
         gps_start,
         gps_end,
         data_fetcher=data_fetcher,
         detector=detector,
     )
-    analysis_chunk = data.crop(analysis_start, gps_end)
-    psd_chunk = data.crop(gps_start, analysis_start)
+
+    times = full_data.times.value
+    values = full_data.value
+    sample_rate = full_data.sample_rate.value
+
+    center_idx = int(np.argmin(np.abs(times - trigger_time)))
+    half = ANALYSIS_SAMPLES // 2
+    start_idx = center_idx - half
+    end_idx = start_idx + ANALYSIS_SAMPLES
+
+    if start_idx < 0 or end_idx > len(values):
+        raise ValueError(
+            "Requested analysis window exceeds available data. "
+            "Increase segment buffer or reduce analysis length."
+        )
+
+    analysis_values = values[start_idx:end_idx]
+    analysis_times = times[start_idx:end_idx]
+    analysis_chunk = TimeSeries(
+        analysis_values,
+        times=analysis_times,
+        unit=full_data.unit,
+    )
+
+    psd_chunk = full_data.crop(gps_start, analysis_start)
     psd = generate_psd(psd_chunk)
 
-    return analysis_chunk, psd
+    return analysis_chunk, psd, full_data
 
 
 def _save_analysis_chunk_and_psd(
     analysis_chunk: TimeSeries,
     psd: FrequencySeries,
+    full_data: TimeSeries,
     trigger_time: float,
     outdir: str,
     injection=None,
@@ -72,10 +97,10 @@ def _save_analysis_chunk_and_psd(
 
     # Save diagnostic plot (optional artefact)
     plot_fname = os.path.join(outdir, f"analysis_chunk_{int(trigger_time)}.png")
-    plot(analysis_chunk, psd, trigger_time, plot_fname)
+    plot(full_data, psd, trigger_time, plot_fname)
 
     bundle_path = os.path.join(outdir, f"analysis_bundle_{int(trigger_time)}.hdf5")
-    _write_analysis_bundle(bundle_path, analysis_chunk, psd, trigger_time, injection)
+    _write_analysis_bundle(bundle_path, analysis_chunk, full_data, psd, trigger_time, injection)
 
     return bundle_path
 
@@ -148,6 +173,7 @@ def load_strain_segment(
 def _write_analysis_bundle(
     bundle_path: str,
     analysis_chunk: TimeSeries,
+    full_data: TimeSeries,
     psd: FrequencySeries,
     trigger_time: float,
     injection=None,
@@ -155,12 +181,19 @@ def _write_analysis_bundle(
     with h5py.File(bundle_path, "w") as f:
         f.attrs["trigger_time"] = float(trigger_time)
 
-        strain_grp = f.create_group("strain")
-        strain_grp.create_dataset("values", data=analysis_chunk.value)
-        strain_grp.attrs["t0"] = float(analysis_chunk.times.value[0])
-        strain_grp.attrs["dt"] = float(analysis_chunk.dt.value)
-        strain_grp.attrs["unit"] = str(analysis_chunk.unit)
-        strain_grp.attrs["sample_rate"] = float(analysis_chunk.sample_rate.value)
+        short_grp = f.create_group("strain")
+        short_grp.create_dataset("values", data=analysis_chunk.value)
+        short_grp.attrs["t0"] = float(analysis_chunk.times.value[0])
+        short_grp.attrs["dt"] = float(analysis_chunk.dt.value)
+        short_grp.attrs["unit"] = str(analysis_chunk.unit)
+        short_grp.attrs["sample_rate"] = float(analysis_chunk.sample_rate.value)
+
+        full_grp = f.create_group("full_strain")
+        full_grp.create_dataset("values", data=full_data.value)
+        full_grp.attrs["t0"] = float(full_data.times.value[0])
+        full_grp.attrs["dt"] = float(full_data.dt.value)
+        full_grp.attrs["unit"] = str(full_data.unit)
+        full_grp.attrs["sample_rate"] = float(full_data.sample_rate.value)
 
         psd_grp = f.create_group("psd")
         psd_grp.create_dataset("values", data=psd.value)
@@ -189,6 +222,15 @@ def load_analysis_bundle(bundle_path: str) -> tuple[TimeSeries, FrequencySeries,
         freqs = psd_grp["frequencies"][...]
         psd_unit = psd_grp.attrs.get("unit")
         psd = FrequencySeries(psd_values, frequencies=freqs, unit=psd_unit)
+
+        if "full_strain" in f:
+            full_grp = f["full_strain"]
+            full_vals = full_grp["values"][...]
+            full_t0 = float(full_grp.attrs["t0"])
+            full_dt = float(full_grp.attrs["dt"])
+            full_unit = full_grp.attrs.get("unit")
+            full_times = full_t0 + np.arange(full_vals.shape[0]) * full_dt
+            metadata["full_strain"] = TimeSeries(full_vals, times=full_times, unit=full_unit)
 
         if "extras" in f and "injection" in f["extras"]:
             metadata["injection"] = f["extras"]["injection"][...]

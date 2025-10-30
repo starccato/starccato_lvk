@@ -24,6 +24,12 @@ def plot(data: TimeSeries, psd: FrequencySeries, event_time: float, fname: str):
 def plot_qtransform(ts: TimeSeries, event_time: float, axes=None):
     nyquist = ts.sample_rate.value / 2
     f_high = min(1024, 0.63 * nyquist)
+    if len(ts.value) < 4096:
+        for ax in axes:
+            ax.axis("off")
+        axes[0].set_title("Q-transform unavailable (segment too short)")
+        return
+
     q_scan = ts.q_transform(
         qrange=[4, 64], frange=[10, f_high], tres=0.002, fres=0.5, whiten=True
     )
@@ -48,13 +54,18 @@ def plot_qtransform(ts: TimeSeries, event_time: float, axes=None):
 
 
 def plot_psd_and_analysis_data(psd: FrequencySeries, analysis_data: TimeSeries, ax):
-    analysis_psd = analysis_data.psd()
-    ax.plot(psd, label="LIGO-Livingston", color="gwpy:ligo-livingston")
-    ax.plot(analysis_psd, label="Analysis Data", color="tab:orange", alpha=0.3)
-    N_time = 512
-    freqs = np.fft.rfftfreq(N_time, d=1/analysis_data.sample_rate.value)
-    psd_interp = np.interp(freqs, psd.frequencies.value, psd.value, left=np.inf, right=np.inf)
-    ax.plot(freqs, psd_interp, label="PSD Analysis", color="k", alpha=0.5)
+    if len(analysis_data.value) < 4096:
+        freqs = np.fft.rfftfreq(len(analysis_data.value), d=1 / analysis_data.sample_rate.value)
+        demeaned = analysis_data.value - np.mean(analysis_data.value)
+        psd_values = (np.abs(np.fft.rfft(demeaned)) ** 2) * (2.0 / len(analysis_data.value))
+        ax.plot(freqs, psd_values, label="Rapid PSD", color="tab:orange")
+    else:
+        analysis_psd = analysis_data.psd()
+        ax.plot(psd, label="LIGO-Livingston", color="gwpy:ligo-livingston")
+        ax.plot(analysis_psd, label="Analysis Data", color="tab:orange", alpha=0.3)
+        freqs = np.fft.rfftfreq(len(analysis_data.value), d=1 / analysis_data.sample_rate.value)
+        psd_interp = np.interp(freqs, psd.frequencies.value, psd.value, left=np.inf, right=np.inf)
+        ax.plot(freqs, psd_interp, label="PSD Analysis", color="k", alpha=0.5)
     ax.set_xlim(100, 1600)
     ax.set_ylim(1e-24**2, 1e-21**2)
     ax.set_yscale('log', base=10)
@@ -65,16 +76,28 @@ def plot_psd_and_analysis_data(psd: FrequencySeries, analysis_data: TimeSeries, 
 
 
 def plot_analysis_timeseries(analysis_data: TimeSeries, event_time: float, ax):
-    d = analysis_data.whiten()
+    try:
+        d = analysis_data.whiten()
+        values = d.value
+        times = d.times.value
+    except Exception:
+        values = analysis_data.value
+        values = values - np.mean(values)
+        std = np.std(values) or 1.0
+        values = values / std
+        times = analysis_data.times.value
+
     fs = analysis_data.sample_rate.value
     t0 = analysis_data.times.value[-1] - 1  # hardcoded trigger time to be 1 second before the last sample
-    n_samps = 512
-    t_offset = n_samps / 2 / fs  # 256 samples before and after t0
-    crop_start = max(t0 - t_offset, d.times.value[0])
-    crop_end = min(t0 + t_offset, d.times.value[-1])
-    d = d.crop(crop_start, crop_end)
-    t = d.times.value - t0
-    ax.plot(t, d.value, label="Analysis Data", color="tab:orange")
+    half_window = 256 / fs  # 512 samples total, centered on t0
+    crop_start = max(t0 - half_window, times[0])
+    crop_end = min(t0 + half_window, times[-1])
+
+    mask = (times >= crop_start) & (times <= crop_end)
+    t = times[mask] - t0
+    vals = values[mask]
+
+    ax.plot(t, vals, label="Analysis Data", color="tab:orange")
     ax.axvline(0, color='red',  label='Event Time', alpha=0.3,lw=3)
     ax.set_xlabel(f'Time [s] from event')
     ax.set_ylabel('Whitened Strain')
