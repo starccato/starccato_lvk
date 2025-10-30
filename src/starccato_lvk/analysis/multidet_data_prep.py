@@ -11,8 +11,8 @@ import numpy as np
 from astropy.time import Time
 from gwpy.frequencyseries import FrequencySeries
 from gwpy.timeseries import TimeSeries
-from jimgw.core.single_event import detector as jim_detector
-from jimgw.core.single_event import data as jim_data
+from ..jimgw.core.single_event import detector as jim_detector
+from ..jimgw.core.single_event import data as jim_data
 
 from .constants import FLOW, FMAX
 from ..acquisition.io.strain_loader import (

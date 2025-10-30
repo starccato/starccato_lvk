@@ -36,6 +36,9 @@ dependencies = [
     "gwpy",
     "scipy",
     "click",
+    "jaxtyping",
+    "morphZ",
+    "starccato_jax>=0.1.16",
 ]
 
 [project.optional-dependencies]
@@ -146,3 +149,8 @@ starccato-lvk = "starccato_lvk.cli:cli"
 lvk_fetch = "starccato_lvk.acquisition.lvk_fetch:cli"
 starccato_lvk_run_event = "starccato_lvk.workflows.run_event:cli_run_event"
 starccato_lvk_generate_events = "starccato_lvk.workflows.run_event:cli_generate_events"
+generate_trigger_csv = "starccato_lvk.acquisition.generate_trigger_csv:cli"
+
+
+[tool.setuptools]
+package-data = { "starccato_lvk" = ["acquisition/io/data/triggers.csv"] }

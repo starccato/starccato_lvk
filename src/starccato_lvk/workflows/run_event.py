@@ -8,6 +8,7 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence
 import h5py
 import numpy as np
 import yaml
+import pandas as pd
 from astropy.time import Time
 import click
 
@@ -25,6 +26,7 @@ if not _SLURM_ROOT.exists():  # pragma: no cover - fallback for non-repo install
 
 CONFIG_DEFAULT = _SLURM_ROOT / "configs/analysis.yaml"
 EVENTS_DIR_DEFAULT = _SLURM_ROOT / "configs"
+TRIGGERS_CSV_DEFAULT = _PACKAGE_ROOT / "src/starccato_lvk/acquisition/io/data/triggers.csv"
 
 
 @dataclass
@@ -143,6 +145,25 @@ def read_event_list(scenario: str, index: int, *, root: Path = EVENTS_DIR_DEFAUL
     return float(lines[index])
 
 
+def read_event_from_triggers_csv(
+    scenario: str, index: int, *, csv_path: Path
+) -> float:
+    if not csv_path.exists():
+        raise FileNotFoundError(f"Triggers CSV {csv_path} missing.")
+    df = pd.read_csv(csv_path)
+    required_cols = {"noise_trigger", "blip_trigger"}
+    if not required_cols.issubset(df.columns):
+        raise ValueError(
+            f"Triggers CSV must contain columns {required_cols}, found {set(df.columns)}"
+        )
+    if index < 0 or index >= len(df):
+        raise IndexError(f"Index {index} out of range for triggers CSV (len={len(df)}).")
+    if scenario == "blip":
+        return float(df.loc[index, "blip_trigger"])
+    else:  # "noise" or "noise_inj"
+        return float(df.loc[index, "noise_trigger"])
+
+
 def prepare_bundles(detectors: Sequence[str], gps: float, output_dir: Path) -> Dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     bundle_map: Dict[str, Path] = {}
@@ -160,6 +181,24 @@ def prepare_bundles(detectors: Sequence[str], gps: float, output_dir: Path) -> D
             raise FileNotFoundError(f"No bundle found for {det_name} at gps {gps}")
         bundle_map[det_name] = bundles[0]
     return bundle_map
+
+
+def _find_existing_noise_bundles(
+    detectors: Sequence[str], gps: float, output_root: Path
+) -> Optional[Dict[str, Path]]:
+    noise_dir = output_root / "noise" / f"{int(gps)}" / "bundles"
+    if not noise_dir.exists():
+        return None
+    bundle_map: Dict[str, Path] = {}
+    for det in detectors:
+        det_dir = noise_dir / det.upper()
+        if not det_dir.exists():
+            return None
+        bundles = list(det_dir.glob("analysis_bundle_*.hdf5"))
+        if not bundles:
+            return None
+        bundle_map[det.upper()] = bundles[0]
+    return bundle_map if bundle_map else None
 
 
 def inject_signal(
@@ -239,16 +278,26 @@ def run_event_workflow(
     bundle_paths: Optional[Dict[str, Path]] = None
 
     if stage in ("prep", "both"):
-        bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir)
         if scenario == "noise_inj":
+            # Prefer reusing existing noise bundles to avoid duplicate downloads
+            bundle_paths = _find_existing_noise_bundles(cfg.detectors, gps, cfg.output_root)
+            if bundle_paths is None:
+                bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir)
             injected_dir = scenario_dir / "bundles_injected"
             bundle_paths = inject_signal(bundle_paths, gps, cfg, injected_dir, distance_scale=injection_distance)
+        else:
+            bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir)
 
     if stage in ("analysis", "both"):
-        bundle_paths = bundle_paths or prepare_bundles(cfg.detectors, gps, bundles_dir)
-        if scenario == "noise_inj":
-            injected_dir = scenario_dir / "bundles_injected"
-            bundle_paths = inject_signal(bundle_paths, gps, cfg, injected_dir, distance_scale=injection_distance)
+        if bundle_paths is None:
+            if scenario == "noise_inj":
+                bundle_paths = _find_existing_noise_bundles(cfg.detectors, gps, cfg.output_root)
+                if bundle_paths is None:
+                    bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir)
+                injected_dir = scenario_dir / "bundles_injected"
+                bundle_paths = inject_signal(bundle_paths, gps, cfg, injected_dir, distance_scale=injection_distance)
+            else:
+                bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir)
 
         outdir = scenario_dir / "analysis"
         outdir.mkdir(parents=True, exist_ok=True)
@@ -300,6 +349,12 @@ def run_event_workflow(
     show_default=True,
     help="Directory containing events_<scenario>.txt files.",
 )
+@click.option(
+    "--triggers-csv",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    default=None,
+    help="Optional CSV with paired triggers (noise_trigger, blip_trigger). Overrides events-dir if given.",
+)
 @click.option("--force", is_flag=True, help="Re-run analysis even if summary exists.")
 @click.option("--distance", type=float, default=1.0, show_default=True, help="Injection distance scale for noise_inj scenario.")
 @click.option(
@@ -314,13 +369,20 @@ def cli_run_event(
     event_index: int,
     config: Path,
     events_dir: Path,
+    triggers_csv: Optional[Path],
     force: bool,
     distance: float,
     stage: str,
 ) -> None:
     """Run Starccato LVK analysis for a single event."""
     cfg = load_analysis_config(config)
-    gps = read_event_list(scenario, event_index, root=events_dir)
+    # Resolve GPS from triggers CSV if provided or available at default path
+    if triggers_csv is None and TRIGGERS_CSV_DEFAULT.exists():
+        triggers_csv = TRIGGERS_CSV_DEFAULT
+    if triggers_csv is not None:
+        gps = read_event_from_triggers_csv(scenario, event_index, csv_path=triggers_csv)
+    else:
+        gps = read_event_list(scenario, event_index, root=events_dir)
     result = run_event_workflow(
         cfg,
         scenario,

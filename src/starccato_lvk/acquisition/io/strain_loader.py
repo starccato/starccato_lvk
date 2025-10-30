@@ -6,7 +6,7 @@ from typing import Callable, Optional
 import h5py
 import numpy as np
 from gwpy.frequencyseries import FrequencySeries
-from gwpy.timeseries import TimeSeries
+from gwpy.timeseries import TimeSeries, StateVector
 
 from .plotting import plot
 from .utils import _get_fnames_for_range
@@ -139,6 +139,23 @@ def _remote_data_fetcher(detector: str) -> DataFetcher:
     return fetch
 
 
+def _detector_cat3_online(detector: str, gps_start: float, gps_end: float) -> bool:
+    """Return True if detector passes CBC CAT3 flag over the full interval.
+
+    If the data-quality query fails (e.g., network issues), return False so the
+    caller can surface a clear message rather than a fetch error.
+    """
+    try:
+        sv = StateVector.fetch_open_data(detector, gps_start, gps_end, verbose=False)
+        dq = sv.to_dqflags()
+        if "passes cbc CAT3 test" not in dq:
+            return False
+        cat3 = dq["passes cbc CAT3 test"]
+        return any((gps_start >= s) and (gps_end <= e) for s, e in cat3.active)
+    except Exception:
+        return False
+
+
 def load_strain_segment(
     gps_start: float,
     gps_end: float,
@@ -160,12 +177,16 @@ def load_strain_segment(
                 f"detector {det} between {gps_start} and {gps_end}."
             )
             try:
+                if not _detector_cat3_online(det, gps_start, gps_end):
+                    raise RuntimeError(
+                        f"Detector {det} appears not CAT3-online for {gps_start}–{gps_end}. "
+                        "Pick a different trigger time or detector, or supply local data."
+                    )
                 return remote_fetch(gps_start, gps_end)
             except Exception as fetch_err:
                 raise RuntimeError(
                     "Failed to fetch strain data from GWOSC. "
-                    "Check your network connection or set `DEFAULT_DETECTOR` "
-                    "to a valid instrument."
+                    "Check network, verify detector selection, or use a time with CAT3 data."
                 ) from fetch_err
         raise
 
