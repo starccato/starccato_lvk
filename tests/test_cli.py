@@ -88,6 +88,7 @@ def test_run_command(monkeypatch, tmp_path):
             "--test-mode",
             "--verbose",
             "--skip-artifacts",
+            "--diagnostics",
         ],
     )
     assert result.exit_code == 0
@@ -101,6 +102,7 @@ def test_run_command(monkeypatch, tmp_path):
     assert called["test_mode"] is True
     assert called["verbose"] is True
     assert called["save_artifacts"] is False
+    assert called["diagnostics"] is True
 
 
 def test_run_command_bundle(monkeypatch, tmp_path):

@@ -1,0 +1,32 @@
+detectors:
+  - H1
+  - L1
+data:
+  flow: 100.0
+  fmax: 1024.0
+  roll_off: 0.01
+sampler:
+  engine: nuts
+  num_warmup: 500
+  num_samples: 1000
+  num_chains: 1
+priors:
+  signal:
+    latent_sigma: 1.0
+    log_amp_sigma: 1.0
+  glitch:
+    latent_sigma: 1.0
+    log_amp_sigma: 1.0
+models:
+  signal: ccsne
+  glitch: blip
+analysis:
+  flow: 100.0
+  fmax: 1024.0
+  alpha: 1.0
+  beta: 0.5
+  save_artifacts: true
+  ci:
+    - 5
+    - 95
+output_root: lvk/slurm/out

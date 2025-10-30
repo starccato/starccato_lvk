@@ -35,6 +35,7 @@ dependencies = [
     "pycbc",
     "gwpy",
     "scipy",
+    "click",
 ]
 
 [project.optional-dependencies]
@@ -143,3 +144,5 @@ ignore_missing_imports = true
 # Main CLI entry point
 starccato-lvk = "starccato_lvk.cli:cli"
 lvk_fetch = "starccato_lvk.acquisition.lvk_fetch:cli"
+starccato_lvk_run_event = "starccato_lvk.workflows.run_event:cli_run_event"
+starccato_lvk_generate_events = "starccato_lvk.workflows.run_event:cli_generate_events"
