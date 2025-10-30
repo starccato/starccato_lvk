@@ -57,6 +57,7 @@ dev = [
 [tool.setuptools_scm]
 version_file = "src/starccato_lvk/_version.py"
 
+
 [tool.semantic_release]
 version_variable = "src/starccato_lvk/_version.py:__version__"
 version_source = "commit"
@@ -77,7 +78,7 @@ changelog_file = "CHANGELOG.rst"
 
 
 [tool.setuptools]
-package-data = { "starccato_lvk" = [""] }
+package-data = { "starccato_lvk" = ["acquisition/io/data/triggers.csv"] }
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -150,7 +151,3 @@ lvk_fetch = "starccato_lvk.acquisition.lvk_fetch:cli"
 starccato_lvk_run_event = "starccato_lvk.workflows.run_event:cli_run_event"
 starccato_lvk_generate_events = "starccato_lvk.workflows.run_event:cli_generate_events"
 generate_trigger_csv = "starccato_lvk.acquisition.generate_trigger_csv:cli"
-
-
-[tool.setuptools]
-package-data = { "starccato_lvk" = ["acquisition/io/data/triggers.csv"] }
