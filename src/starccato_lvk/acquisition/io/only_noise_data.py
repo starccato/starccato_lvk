@@ -114,6 +114,8 @@ def _generate_noise_segments_from_local_files(
     min_gap: int = DEFAULT_MIN_GAP,
 ) -> np.ndarray:
     """Scan local GWOSC/OzSTAR files and extract CAT3-valid noise segments."""
+
+    print("Scanning local data files for CAT3-valid noise segments...")
     files_map = _get_data_files_and_gps_times()
     if not files_map:
         return np.empty((0, 2), dtype=int)
