@@ -1,11 +1,11 @@
 import glob
 import re
-from typing import Dict
+from typing import Dict, Optional
 
 from starccato_lvk.acquisition import config
 
 
-def _get_data_files_and_gps_times() -> Dict[int, str]:
+def _get_data_files_and_gps_times(detector: Optional[str] = None) -> Dict[int, str]:
     """Get a mapping of GPS times (start times) to HDF5 files.
 
     Returns:
@@ -17,7 +17,9 @@ def _get_data_files_and_gps_times() -> Dict[int, str]:
         999: "path/to/yet_another_file.hdf5"
         }
     """
-    search_str = f"{config.DATA_DIR}/*/*.hdf5"
+    det = (detector or config.DEFAULT_DETECTOR).upper()
+    base = config.DATA_DIRS.get(det, config.DATA_DIR)
+    search_str = f"{base}/*/*.hdf5"
     files = glob.glob(search_str)
     if not files:
         raise FileNotFoundError(f"No HDF5 files found at {search_str}")
@@ -27,12 +29,12 @@ def _get_data_files_and_gps_times() -> Dict[int, str]:
     return path_dict
 
 
-def _get_fnames_for_range(gps_start: float, gps_end: float) -> (str, str):
+def _get_fnames_for_range(gps_start: float, gps_end: float, detector: Optional[str] = None) -> (str, str):
     """Get the filenames for the start and end GPS times."""
     gps_start = int(gps_start)
     gps_end = int(gps_end)
 
-    gps_files = _get_data_files_and_gps_times()
+    gps_files = _get_data_files_and_gps_times(detector)
     start_times = sorted(gps_files.keys())
 
     files = []
