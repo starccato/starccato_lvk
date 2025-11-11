@@ -1,16 +1,21 @@
 import os
-from typing import Optional
+from typing import Optional, Sequence
 
 import numpy as np
 
+from gwpy.timeseries import StateVector
+
 from .determine_valid_segments import _get_valid_start_stops_for_one_file
-from .utils import _get_data_files_and_gps_times
+from .utils import _get_data_files_and_gps_times, _get_fnames_for_range
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 NOISE_DATA_CACHE = f"{HERE}/data/only_noise_segments.txt"
 DEFAULT_SEGMENT_LENGTH = 130  # seconds
 DEFAULT_MIN_GAP = 10  # seconds
 MAX_SEGMENTS = 2000  # cap to avoid huge caches
+# Require both H1 and L1 CAT3-online for cached segments
+REQUIRE_BOTH_DETS = True
+DETECTOR_PAIR: Sequence[str] = ("H1", "L1")
 
 
 def _load_cached_segments(cache_path: str) -> Optional[np.ndarray]:
@@ -57,7 +62,39 @@ def load_only_noise_segments() -> np.ndarray:
             "Unable to find CAT3-valid noise segments in the local data store. "
             "Ensure DATA_DIR points to valid LVK strain files."
         )
-
+    # Optional stricter filter: require CAT3-online for both H1 and L1
+    if REQUIRE_BOTH_DETS:
+        filtered: list[list[int]] = []
+        for start, stop in segments:
+            # Sanity guard for inverted segments
+            if stop <= start:
+                continue
+            ok = True
+            for det in DETECTOR_PAIR:
+                try:
+                    files = _get_fnames_for_range(float(start), float(stop), detector=det)
+                    if not files:
+                        ok = False
+                        break
+                    sv = StateVector.read(files, format='hdf5.gwosc')
+                    dq = sv.to_dqflags()
+                    if "passes cbc CAT3 test" not in dq:
+                        ok = False
+                        break
+                    cat3 = dq["passes cbc CAT3 test"]
+                    if not any((start >= s) and (stop <= e) for s, e in cat3.active):
+                        ok = False
+                        break
+                except Exception:
+                    ok = False
+                    break
+            if ok:
+                filtered.append([int(start), int(stop)])
+        if filtered:
+            segments = np.asarray(filtered, dtype=int)
+        else:
+            # If none pass, keep original (to avoid empty cache) and rely on later filters
+            pass
     _cache_segments(NOISE_DATA_CACHE, segments)
     return segments
 
