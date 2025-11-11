@@ -17,8 +17,10 @@ def _get_data_files_and_gps_times(detector: Optional[str] = None) -> Dict[int, s
         999: "path/to/yet_another_file.hdf5"
         }
     """
+    
     det = (detector or config.DEFAULT_DETECTOR).upper()
     base = config.DATA_DIRS.get(det, config.DATA_DIR)
+    print(f"Looking for HDF5 files in {base} for detector {det}...")
     search_str = f"{base}/*/*.hdf5"
     files = glob.glob(search_str)
     if not files:

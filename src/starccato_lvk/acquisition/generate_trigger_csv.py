@@ -12,6 +12,7 @@ from gwpy.timeseries import StateVector
 from .io.only_noise_data import load_only_noise_segments
 from .io.glitch_catalog import load_blip_glitch_catalog, DURATION as CCSN_DURATION
 from .io.utils import _get_fnames_for_range
+from .io.strain_loader import _detector_cat3_online
 
 HERE = Path(__file__).parent
 DATA_DIR = HERE / "io/data"
@@ -240,24 +241,33 @@ _DQ_CACHE: dict[tuple[str, int, int], bool] = {}
 
 
 def _dq_online_cached(det: str, gps_start: float, gps_end: float) -> bool:
-    key = (det, int(np.floor(gps_start)), int(np.ceil(gps_end)))
+    det_code = det.upper()
+    key = (det_code, int(np.floor(gps_start)), int(np.ceil(gps_end)))
     hit = _DQ_CACHE.get(key)
     if hit is not None:
         return hit
-    # Local DQ check using StateVector from local HDF5 files
-    try:
-        files = _get_fnames_for_range(gps_start, gps_end, detector=det)
+
+    def _check_local() -> bool | None:
+        try:
+            files = _get_fnames_for_range(gps_start, gps_end, detector=det_code)
+        except FileNotFoundError:
+            return None
         if not files:
-            ok = False
-        else:
+            return None
+        try:
             sv = StateVector.read(files, format='hdf5.gwosc')
             dq = sv.to_dqflags()
             if "passes cbc CAT3 test" not in dq:
-                ok = False
-            else:
-                cat3 = dq["passes cbc CAT3 test"]
-                ok = any((gps_start >= s) and (gps_end <= e) for s, e in cat3.active)
-    except Exception:
-        ok = False
+                return False
+            cat3 = dq["passes cbc CAT3 test"]
+            return any((gps_start >= s) and (gps_end <= e) for s, e in cat3.active)
+        except Exception:
+            return False
+
+    local_ok = _check_local()
+    if local_ok is None:
+        ok = _detector_cat3_online(det_code, gps_start, gps_end)
+    else:
+        ok = bool(local_ok)
     _DQ_CACHE[key] = ok
     return ok
