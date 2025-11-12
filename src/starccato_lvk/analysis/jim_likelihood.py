@@ -127,6 +127,10 @@ def run_numpyro_sampling(
     mcmc.run(rng_key)
     runtime = time.perf_counter() - t0
     samples = {name: np.asarray(value) for name, value in mcmc.get_samples().items()}
+    samples_grouped = {
+        name: np.asarray(value)
+        for name, value in mcmc.get_samples(group_by_chain=True).items()
+    }
     sample_stats = {name: np.asarray(value) for name, value in mcmc.get_extra_fields().items()}
 
     logpost_single = build_log_density_fn(model, {})
@@ -144,6 +148,7 @@ def run_numpyro_sampling(
             "num_chains": num_chains,
             "num_warmup": num_warmup,
             "num_samples": num_samples,
+            "samples_grouped": samples_grouped,
             "log_posterior": log_posterior,
             "latent_sigma": np.asarray(latent_sigma_arr),
             "log_amp_sigma": float(log_amp_sigma_val),
