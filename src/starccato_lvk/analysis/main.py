@@ -392,6 +392,10 @@ def run_bcr_posteriors(
     ci: tuple[int, int] = (5, 95),
     alpha: float = 1.0,
     beta: float = 0.5,
+    lnz_method: str = "morph",
+    nested_num_live_points: int = 500,
+    nested_max_samples: int = 20000,
+    nested_num_posterior_samples: Optional[int] = None,
 ) -> Dict[str, Dict[str, float]]:
     detector_names = [det.upper() for det in detectors]
     bundle_map = _normalise_bundle_paths(bundle_paths)
@@ -415,6 +419,12 @@ def run_bcr_posteriors(
         extrinsics.update(extrinsic_params)
     extrinsics.setdefault("gmst", prepared.gmst)
     extrinsics.setdefault("trigger_time", prepared.trigger_time)
+
+    lnz_method = lnz_method.lower()
+    if lnz_method not in {"morph", "nested"}:
+        raise ValueError("lnz_method must be 'morph' or 'nested'.")
+
+    use_nested = lnz_method == "nested"
 
     rng_master = jax.random.PRNGKey(rng_seed)
 
@@ -441,17 +451,30 @@ def run_bcr_posteriors(
     )
 
     signal_rng = jax.random.fold_in(rng_master, 0)
-    signal_result = run_numpyro_sampling(
-        signal_likelihood,
-        latent_names=signal_latent_names,
-        fixed_params=extrinsics,
-        rng_key=signal_rng,
-        latent_sigma=latent_sigma_signal,
-        log_amp_sigma=log_amp_sigma_signal,
-        num_warmup=num_warmup,
-        num_samples=num_samples,
-        num_chains=num_chains,
-    )
+    if use_nested:
+        signal_result = run_nested_sampling(
+            signal_likelihood,
+            latent_names=signal_latent_names,
+            fixed_params=extrinsics,
+            rng_key=signal_rng,
+            latent_sigma=latent_sigma_signal,
+            log_amp_sigma=log_amp_sigma_signal,
+            num_live_points=nested_num_live_points,
+            max_samples=nested_max_samples,
+            num_posterior_samples=nested_num_posterior_samples or num_samples,
+        )
+    else:
+        signal_result = run_numpyro_sampling(
+            signal_likelihood,
+            latent_names=signal_latent_names,
+            fixed_params=extrinsics,
+            rng_key=signal_rng,
+            latent_sigma=latent_sigma_signal,
+            log_amp_sigma=log_amp_sigma_signal,
+            num_warmup=num_warmup,
+            num_samples=num_samples,
+            num_chains=num_chains,
+        )
 
     _report_effective_sample_sizes("signal", signal_result.extra.get("samples_grouped"))
 
@@ -472,23 +495,27 @@ def run_bcr_posteriors(
             title_prefix="Signal",
         )
 
-    signal_model_callable, _, _ = _build_numpyro_model(
-        signal_likelihood,
-        signal_latent_names,
-        latent_sigma_signal,
-        log_amp_sigma_signal,
-        extrinsics,
-    )
-    signal_logZ, signal_logZ_err = _compute_morphz_evidence(
-        signal_result.samples,
-        signal_result.extra.get("log_posterior"),
-        signal_latent_names,
-        True,
-        signal_model_callable,
-        extrinsics,
-        signal_dir if save_artifacts else base_outdir,
-        "signal",
-    )
+    if use_nested:
+        signal_logZ = signal_result.logZ
+        signal_logZ_err = signal_result.logZ_err
+    else:
+        signal_model_callable, _, _ = _build_numpyro_model(
+            signal_likelihood,
+            signal_latent_names,
+            latent_sigma_signal,
+            log_amp_sigma_signal,
+            extrinsics,
+        )
+        signal_logZ, signal_logZ_err = _compute_morphz_evidence(
+            signal_result.samples,
+            signal_result.extra.get("log_posterior"),
+            signal_latent_names,
+            True,
+            signal_model_callable,
+            extrinsics,
+            signal_dir if save_artifacts else base_outdir,
+            "signal",
+        )
     results["signal"]["logZ"] = signal_logZ
     results["signal"]["logZ_err"] = signal_logZ_err
 
@@ -517,18 +544,31 @@ def run_bcr_posteriors(
         glitch_rng = jax.random.fold_in(rng_master, det_index)
         init_values = {name: jnp.array(0.0) for name in glitch_latent_names}
         init_values["log_amp"] = jnp.array(0.0)
-        glitch_result = run_numpyro_sampling(
-            glitch_likelihood,
-            latent_names=glitch_latent_names,
-            fixed_params={},
-            rng_key=glitch_rng,
-            latent_sigma=latent_sigma_glitch,
-            log_amp_sigma=log_amp_sigma_glitch,
-            num_warmup=num_warmup,
-            num_samples=num_samples,
-            num_chains=num_chains,
-            init_strategy=init_to_value(values=init_values),
-        )
+        if use_nested:
+            glitch_result = run_nested_sampling(
+                glitch_likelihood,
+                latent_names=glitch_latent_names,
+                fixed_params={},
+                rng_key=glitch_rng,
+                latent_sigma=latent_sigma_glitch,
+                log_amp_sigma=log_amp_sigma_glitch,
+                num_live_points=nested_num_live_points,
+                max_samples=nested_max_samples,
+                num_posterior_samples=nested_num_posterior_samples or num_samples,
+            )
+        else:
+            glitch_result = run_numpyro_sampling(
+                glitch_likelihood,
+                latent_names=glitch_latent_names,
+                fixed_params={},
+                rng_key=glitch_rng,
+                latent_sigma=latent_sigma_glitch,
+                log_amp_sigma=log_amp_sigma_glitch,
+                num_warmup=num_warmup,
+                num_samples=num_samples,
+                num_chains=num_chains,
+                init_strategy=init_to_value(values=init_values),
+            )
 
         _report_effective_sample_sizes(f"glitch {det.name}", glitch_result.extra.get("samples_grouped"))
 
@@ -549,23 +589,27 @@ def run_bcr_posteriors(
                 title_prefix=f"Glitch {det.name}",
             )
 
-        glitch_model_callable, _, _ = _build_numpyro_model(
-            glitch_likelihood,
-            glitch_latent_names,
-            latent_sigma_glitch,
-            log_amp_sigma_glitch,
-            {},
-        )
-        glitch_logZ, glitch_logZ_err = _compute_morphz_evidence(
-            glitch_result.samples,
-            glitch_result.extra.get("log_posterior"),
-            glitch_latent_names,
-            True,
-            glitch_model_callable,
-            {},
-            glitch_dir if save_artifacts else base_outdir,
-            f"glitch_{det.name.lower()}",
-        )
+        if use_nested:
+            glitch_logZ = glitch_result.logZ
+            glitch_logZ_err = glitch_result.logZ_err
+        else:
+            glitch_model_callable, _, _ = _build_numpyro_model(
+                glitch_likelihood,
+                glitch_latent_names,
+                latent_sigma_glitch,
+                log_amp_sigma_glitch,
+                {},
+            )
+            glitch_logZ, glitch_logZ_err = _compute_morphz_evidence(
+                glitch_result.samples,
+                glitch_result.extra.get("log_posterior"),
+                glitch_latent_names,
+                True,
+                glitch_model_callable,
+                {},
+                glitch_dir if save_artifacts else base_outdir,
+                f"glitch_{det.name.lower()}",
+            )
         results["glitch"][det.name] = glitch_logZ
         results["glitch_err"][det.name] = glitch_logZ_err
 
@@ -591,6 +635,7 @@ def run_bcr_posteriors(
             "bcr": results["bcr"],
             "alpha": alpha,
             "beta": beta,
+            "lnz_method": lnz_method,
         }
         _write_summary_json(base_outdir, summary)
 

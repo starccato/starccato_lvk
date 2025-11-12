@@ -24,10 +24,11 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-from typing import Dict, Iterable
+from typing import Dict, Iterable, Optional
 
 import numpy as np
 import requests
+import matplotlib.pyplot as plt
 from astropy import units as u
 from gwpy.timeseries import TimeSeries
 from gwpy.frequencyseries import FrequencySeries
@@ -108,14 +109,17 @@ def build_waveform(model_name: str, sample_rate: float, log_amp: float) -> np.nd
     return waveform.time_domain_waveform_numpy(params)
 
 
-def center_injection(data: np.ndarray, injection: np.ndarray) -> None:
+def center_injection(data: np.ndarray, injection: np.ndarray) -> np.ndarray:
     if injection.size == 0:
-        return
+        return np.zeros_like(data)
     n = min(len(data), len(injection))
     inj = injection[:n]
     start = len(data) // 2 - n // 2
     end = start + n
+    inserted = np.zeros_like(data)
+    inserted[start:end] = inj
     data[start:end] += inj
+    return inserted
 
 
 def to_timeseries(values: np.ndarray, sample_rate: float, trigger_time: float, label: str) -> TimeSeries:
@@ -173,15 +177,18 @@ def generate_scenario_bundles(
     signal_waveform = build_waveform(signal_model, sample_rate, signal_log_amp) if scenario == "signal" else None
     glitch_waveform = build_waveform(glitch_model, sample_rate, glitch_log_amp) if scenario == "glitch" else None
 
+    diag_dir = outdir / "diagnostics"
+
     for det_index, det in enumerate(detectors):
         psd = psd_cache[det]
         seed = base_seed + 100 * det_index + {"noise": 0, "signal": 1000, "glitch": 2000}.get(scenario, 0)
         noise_data = simulate_noise(psd, n_full, delta_t, seed)
+        injection_trace = np.zeros_like(noise_data)
 
         if scenario == "signal" and signal_waveform is not None:
-            center_injection(noise_data, signal_waveform)
+            injection_trace = center_injection(noise_data, signal_waveform)
         if scenario == "glitch" and det.upper() == glitch_detector.upper() and glitch_waveform is not None:
-            center_injection(noise_data, glitch_waveform)
+            injection_trace = center_injection(noise_data, glitch_waveform)
 
         full_ts = to_timeseries(noise_data, sample_rate, trigger_time, f"{det}_{scenario}")
         chunk_ts = crop_analysis_chunk(full_ts, trigger_time, chunk_samples)
@@ -191,7 +198,66 @@ def generate_scenario_bundles(
         write_bundle(bundle_path, full_ts, chunk_ts, psd_fs, trigger_time)
         bundle_paths[det.upper()] = bundle_path
 
+        plot_simulated_data_diagnostics(
+            det.upper(),
+            scenario,
+            data=noise_data,
+            injection=injection_trace,
+            sample_rate=sample_rate,
+            psd=psd,
+            outdir=diag_dir,
+        )
+
     return bundle_paths
+
+
+def plot_simulated_data_diagnostics(
+    det: str,
+    scenario: str,
+    *,
+    data: np.ndarray,
+    injection: np.ndarray,
+    sample_rate: float,
+    psd: PycbcFrequencySeries,
+    outdir: Path,
+) -> None:
+    outdir.mkdir(parents=True, exist_ok=True)
+    times = (np.arange(len(data)) / sample_rate) - (len(data) / (2.0 * sample_rate))
+
+    window = np.hanning(len(data))
+    windowed = data * window
+    freqs = np.fft.rfftfreq(len(data), d=1.0 / sample_rate)
+    spectrum = np.fft.rfft(windowed)
+    df = freqs[1] - freqs[0] if len(freqs) > 1 else 0.0
+    norm = (np.sum(window**2) / len(window)) if len(window) else 1.0
+    periodogram = (np.abs(spectrum) ** 2) * (2.0 * df / (sample_rate * max(norm, 1e-12)))
+    asd_periodogram = np.sqrt(np.maximum(periodogram, 1e-40))
+
+    psd_values = np.asarray(psd.numpy(), dtype=np.float64)
+    psd_freqs = np.arange(len(psd_values)) * float(psd.delta_f)
+    asd_design = np.sqrt(np.maximum(psd_values, 1e-40))
+
+    fig, (ax_time, ax_freq) = plt.subplots(2, 1, figsize=(8, 6), constrained_layout=True)
+    ax_time.plot(times, data, label="data", lw=1.0)
+    if np.any(np.abs(injection) > 0.0):
+        ax_time.plot(times, injection, label="injection", lw=0.9, color="tab:red")
+    ax_time.set_xlabel("Time [s]")
+    ax_time.set_ylabel("Strain")
+    ax_time.set_title(f"{det} {scenario}: time series")
+    ax_time.legend(loc="upper right")
+
+    valid = freqs > 0
+    ax_freq.loglog(freqs[valid], asd_periodogram[valid], label="Periodogram ASD")
+    design_valid = psd_freqs > 0
+    ax_freq.loglog(psd_freqs[design_valid], asd_design[design_valid], label="Design ASD")
+    ax_freq.set_xlabel("Frequency [Hz]")
+    ax_freq.set_ylabel(r"ASD [$1/\sqrt{Hz}$]")
+    ax_freq.set_title("Frequency domain")
+    ax_freq.legend(loc="best")
+
+    out_path = outdir / f"{det}_{scenario}_diagnostics.png"
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
 
 
 def run_analysis_on_scenario(
@@ -210,6 +276,10 @@ def run_analysis_on_scenario(
     log_amp_sigma_signal: float,
     log_amp_sigma_glitch: float,
     rng_seed: int,
+    lnz_method: str,
+    nested_num_live_points: int,
+    nested_max_samples: int,
+    nested_num_posterior_samples: Optional[int],
 ) -> Path:
     scenario_out = outdir / "analysis"
     scenario_out.mkdir(parents=True, exist_ok=True)
@@ -227,6 +297,10 @@ def run_analysis_on_scenario(
         num_warmup=num_warmup,
         num_chains=num_chains,
         rng_seed=rng_seed,
+        lnz_method=lnz_method,
+        nested_num_live_points=nested_num_live_points,
+        nested_max_samples=nested_max_samples,
+        nested_num_posterior_samples=nested_num_posterior_samples,
     )
     summary_path = scenario_out / "summary.json"
     summary_path.write_text(json.dumps(result, indent=2, sort_keys=True))
@@ -248,14 +322,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--glitch-detector", type=str, default="H1", help="Detector to host the glitch in the 'glitch' scenario.")
     parser.add_argument("--signal-model", type=str, default="ccsne", help="Waveform model for coherent injection.")
     parser.add_argument("--glitch-model", type=str, default="blip", help="Waveform model for glitch injection.")
-    parser.add_argument("--num-samples", type=int, default=500, help="NumPyro samples for BCR analysis.")
-    parser.add_argument("--num-warmup", type=int, default=250, help="NumPyro warmup steps.")
+    parser.add_argument("--num-samples", type=int, default=1000, help="NumPyro samples for BCR analysis.")
+    parser.add_argument("--num-warmup", type=int, default=1000, help="NumPyro warmup steps.")
     parser.add_argument("--num-chains", type=int, default=1, help="NumPyro chains.")
     parser.add_argument("--latent-sigma-signal", type=float, default=1.0, help="Latent prior sigma for coherent model.")
     parser.add_argument("--latent-sigma-glitch", type=float, default=0.5, help="Latent prior sigma for glitch model.")
     parser.add_argument("--log-amp-sigma-signal", type=float, default=1.0, help="log_amp sigma for coherent model.")
     parser.add_argument("--log-amp-sigma-glitch", type=float, default=0.2, help="log_amp sigma for glitch model.")
     parser.add_argument("--rng-seed", type=int, default=1234, help="Seed controlling sampling order in BCR analysis.")
+    parser.add_argument("--lnz-method", choices=["morph", "nested"], default="nested", help="Backend used to compute logZ (morph or nested).")
+    parser.add_argument("--nested-num-live-points", type=int, default=100, help="NumPyro NestedSampler live points (lnz_method=nested).")
+    parser.add_argument("--nested-max-samples", type=int, default=200, help="NestedSampler max samples (lnz_method=nested).")
+    parser.add_argument("--nested-num-posterior-samples", type=int, default=None, help="Posterior draws to keep from NestedSampler (defaults to --num-samples).")
     parser.add_argument("--skip-analysis", action="store_true", help="Only generate bundles; skip inference.")
     return parser.parse_args()
 
@@ -311,10 +389,13 @@ def main() -> None:
             log_amp_sigma_signal=args.log_amp_sigma_signal,
             log_amp_sigma_glitch=args.log_amp_sigma_glitch,
             rng_seed=args.rng_seed,
+            lnz_method=args.lnz_method,
+            nested_num_live_points=args.nested_num_live_points,
+            nested_max_samples=args.nested_max_samples,
+            nested_num_posterior_samples=args.nested_num_posterior_samples,
         )
         print(f"[{scenario}] analysis summary: {summary_path}")
 
 
 if __name__ == "__main__":
     main()
-

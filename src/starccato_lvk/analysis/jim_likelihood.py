@@ -165,10 +165,10 @@ def run_nested_sampling(
     rng_key: jax.Array,
     latent_sigma: float | Iterable[float] = 1.0,
     log_amp_sigma: float = 1.0,
-    num_live_points: int = 500,
-    max_samples: int = 20000,
-    num_posterior_samples: int = 2000,
-    verbose: bool = False,
+    num_live_points: int = 100,
+    max_samples: int = 2000,
+    num_posterior_samples: int = 200,
+    verbose: bool = True,
 ) -> LikelihoodRunResult:
     """Run JIM nested sampling using the supplied likelihood."""
     model, _, _ = _build_numpyro_model(
@@ -178,7 +178,7 @@ def run_nested_sampling(
     ns = NestedSampler(
         model,
         constructor_kwargs=dict(num_live_points=num_live_points, gradient_guided=True, verbose=verbose),
-        termination_kwargs=dict(dlogZ=0.001, ess=500, max_samples=max_samples),
+        termination_kwargs=dict(dlogZ=0.1, ess=100, max_samples=max_samples),
     )
     run_key, sample_key = jax.random.split(rng_key)
     t0 = time.perf_counter()
