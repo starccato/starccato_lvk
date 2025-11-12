@@ -10,6 +10,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 from numpyro.infer import init_to_value
+from numpyro.diagnostics import effective_sample_size
 try:
     from morphZ import evidence as morphz_evidence
 except ImportError:  # pragma: no cover - optional dependency
@@ -127,8 +128,7 @@ def _compute_morphz_evidence(
             log_posterior_values=logpost_values,
             log_posterior_function=lp_fn,
             n_resamples=2000,
-            morph_type="tree",
-            kde_bw="isj",
+            morph_type="pair",
             param_names=param_names,
             output_path=str(outdir / f"morphZ_{label}"),
             n_estimations=2,
@@ -166,6 +166,35 @@ def _ensure_outdir(path: Path) -> None:
 def _write_summary_json(outdir: Path, summary: Dict) -> None:
     with (outdir / "summary.json").open("w") as f:
         json.dump(summary, f, indent=2, sort_keys=True)
+
+
+def _ess_summary(samples_grouped: Mapping[str, np.ndarray]) -> Dict[str, Dict[str, float]]:
+    summaries: Dict[str, Dict[str, float]] = {}
+    for name, values in samples_grouped.items():
+        try:
+            ess = effective_sample_size(jnp.asarray(values))
+        except Exception:
+            continue
+        ess_arr = np.asarray(ess).ravel()
+        ess_arr = ess_arr[np.isfinite(ess_arr)]
+        if ess_arr.size == 0:
+            continue
+        summaries[name] = {
+            "min": float(np.min(ess_arr)),
+            "median": float(np.median(ess_arr)),
+        }
+    return summaries
+
+
+def _report_effective_sample_sizes(label: str, samples_grouped: Optional[Mapping[str, np.ndarray]]) -> None:
+    if not samples_grouped:
+        return
+    summaries = _ess_summary(samples_grouped)
+    if not summaries:
+        return
+    print(f"ESS [{label}] (min/median):")
+    for name, stats in summaries.items():
+        print(f"  {name}: {stats['min']:.1f} / {stats['median']:.1f}")
 
 
 def run_starccato_analysis(
@@ -424,6 +453,8 @@ def run_bcr_posteriors(
         num_chains=num_chains,
     )
 
+    _report_effective_sample_sizes("signal", signal_result.extra.get("samples_grouped"))
+
     signal_dir = base_outdir / "signal"
     if save_artifacts:
         _ensure_outdir(signal_dir)
@@ -498,6 +529,8 @@ def run_bcr_posteriors(
             num_chains=num_chains,
             init_strategy=init_to_value(values=init_values),
         )
+
+        _report_effective_sample_sizes(f"glitch {det.name}", glitch_result.extra.get("samples_grouped"))
 
         glitch_dir = base_outdir / f"glitch_{det.name.lower()}"
         if save_artifacts:
