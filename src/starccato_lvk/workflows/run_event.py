@@ -165,7 +165,9 @@ def read_event_from_triggers_csv(
         return float(df.loc[index, "noise_trigger"])
 
 
-def prepare_bundles(detectors: Sequence[str], gps: float, output_dir: Path) -> Dict[str, Path]:
+def prepare_bundles(
+    detectors: Sequence[str], gps: float, output_dir: Path, *, require_cat3: bool = True
+) -> Dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     bundle_map: Dict[str, Path] = {}
     for det in detectors:
@@ -176,7 +178,7 @@ def prepare_bundles(detectors: Sequence[str], gps: float, output_dir: Path) -> D
         if bundles:
             bundle_map[det_name] = bundles[0]
             continue
-        strain_loader(trigger_time=gps, outdir=det_dir, detector=det_name)
+        strain_loader(trigger_time=gps, outdir=det_dir, detector=det_name, require_cat3=require_cat3)
         bundles = list(det_dir.glob("analysis_bundle_*.hdf5"))
         if not bundles:
             raise FileNotFoundError(f"No bundle found for {det_name} at gps {gps}")
@@ -297,28 +299,31 @@ def run_event_workflow(
     scenario_dir = cfg.output_root / scenario / f"{int(gps)}"
     bundles_dir = scenario_dir / "bundles"
     bundle_paths: Optional[Dict[str, Path]] = None
+    # The blip scenario needs the glitch itself, which fails the CBC CAT3 veto;
+    # noise scenarios want CAT3-clean data.
+    require_cat3 = scenario != "blip"
 
     if stage in ("prep", "both"):
         if scenario == "noise_inj":
             # Prefer reusing existing noise bundles to avoid duplicate downloads
             bundle_paths = _find_existing_noise_bundles(cfg.detectors, gps, cfg.output_root)
             if bundle_paths is None:
-                bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir)
+                bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir, require_cat3=require_cat3)
             injected_dir = scenario_dir / "bundles_injected"
             bundle_paths = inject_signal(bundle_paths, gps, cfg, injected_dir, distance_scale=injection_distance)
         else:
-            bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir)
+            bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir, require_cat3=require_cat3)
 
     if stage in ("analysis", "both"):
         if bundle_paths is None:
             if scenario == "noise_inj":
                 bundle_paths = _find_existing_noise_bundles(cfg.detectors, gps, cfg.output_root)
                 if bundle_paths is None:
-                    bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir)
+                    bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir, require_cat3=require_cat3)
                 injected_dir = scenario_dir / "bundles_injected"
                 bundle_paths = inject_signal(bundle_paths, gps, cfg, injected_dir, distance_scale=injection_distance)
             else:
-                bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir)
+                bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir, require_cat3=require_cat3)
 
         outdir = scenario_dir / "analysis"
         outdir.mkdir(parents=True, exist_ok=True)

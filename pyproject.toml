@@ -25,6 +25,8 @@ classifiers = [
 dependencies = [
     "jax",
     "flax",
+    "numpyro",
+    "jaxns",
     "numpy",
     "matplotlib",
     "pandas",
@@ -37,8 +39,16 @@ dependencies = [
     "scipy",
     "click",
     "jaxtyping",
+    "ripplegw",
     "morphZ",
     "starccato_jax>=0.1.16",
+    "beartype>=0.22.2",
+    "astropy>=5.3.2",
+    "equinox>=0.11.10",
+    "flowmc>=0.2.4",
+    "bilby>=2.3.0",
+    "arviz>=0.16.0",
+    "corner>=2.2.3",
 ]
 
 [project.optional-dependencies]

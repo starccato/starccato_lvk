@@ -4,20 +4,17 @@ import json
 import copy
 import types
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Sequence
+from typing import Callable, Dict, Mapping, Optional, Sequence
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from numpyro.infer import init_to_value
 from numpyro.diagnostics import effective_sample_size
-try:
-    from morphZ import evidence as morphz_evidence
-except ImportError:  # pragma: no cover - optional dependency
-    morphz_evidence = None
 
 from starccato_jax.waveforms import MODELS, get_model
 
+from .evidence import EvidenceResult, evidence_with_fallback
 from .jim_waveform import StarccatoJimWaveform, StarccatoGlitchWaveform
 from .jim_likelihood import (
     LikelihoodRunResult,
@@ -84,69 +81,105 @@ def _compute_morphz_evidence(
     fixed_params: Mapping[str, float],
     outdir: Path,
     label: str,
-):
-    if morphz_evidence is None or log_posterior is None:
-        return float("nan"), float("nan")
-    try:
-        outdir.mkdir(parents=True, exist_ok=True)
-        columns: list[np.ndarray] = []
-        param_names: list[str] = []
-        latent_names = list(latent_names)
+    *,
+    fallback: Optional[Callable[[], EvidenceResult]] = None,
+) -> EvidenceResult:
+    """Estimate ``log Z`` from NUTS samples with morphZ (+ optional fallback).
+
+    Returns an :class:`EvidenceResult` so callers can record which estimator
+    produced the value and surface morphZ failures instead of silently emitting
+    ``NaN`` into the BCR.
+    """
+    if log_posterior is None:
+        return EvidenceResult.failed("no log-posterior values supplied", n_attempts=0)
+
+    outdir.mkdir(parents=True, exist_ok=True)
+    columns: list[np.ndarray] = []
+    param_names: list[str] = []
+    latent_names = list(latent_names)
+    for name in latent_names:
+        arr = np.asarray(samples[name])
+        if arr.ndim == 1:
+            columns.append(arr[:, None])
+            param_names.append(name)
+        else:
+            for idx_col in range(arr.shape[1]):
+                columns.append(arr[:, idx_col][:, None])
+                param_names.append(f"{name}_{idx_col}")
+    if include_log_amp and "log_amp" in samples:
+        columns.append(np.asarray(samples["log_amp"])[:, None])
+        param_names.append("log_amp")
+    post_samples = np.hstack(columns)
+    logpost_values = np.asarray(log_posterior)
+
+    log_density_fn = build_log_density_fn(model, {})
+    fixed_params = dict(fixed_params)
+
+    def lp_fn(theta: np.ndarray) -> float:
+        idx = 0
+        params = {}
         for name in latent_names:
             arr = np.asarray(samples[name])
             if arr.ndim == 1:
-                columns.append(arr[:, None])
-                param_names.append(name)
+                params[name] = jnp.array(theta[idx])
+                idx += 1
             else:
-                for idx_col in range(arr.shape[1]):
-                    columns.append(arr[:, idx_col][:, None])
-                    param_names.append(f"{name}_{idx_col}")
+                size = arr.shape[1]
+                params[name] = jnp.array(theta[idx : idx + size])
+                idx += size
         if include_log_amp and "log_amp" in samples:
-            columns.append(np.asarray(samples["log_amp"])[:, None])
-            param_names.append("log_amp")
-        post_samples = np.hstack(columns)
-        logpost_values = np.asarray(log_posterior)
+            params["log_amp"] = jnp.array(theta[idx])
+        params.update(fixed_params)
+        return float(log_density_fn(params))
 
-        log_density_fn = build_log_density_fn(model, {})
+    result = evidence_with_fallback(
+        post_samples,
+        lp_fn,
+        log_posterior_values=logpost_values,
+        param_names=param_names,
+        output_path=outdir,
+        label=label,
+        fallback=fallback,
+    )
+    if not result.ok:
+        print(f"[evidence] '{label}' failed: {result.message}")
+    elif result.status != "ok":
+        print(f"[evidence] '{label}' used {result.method} ({result.message})")
+    return result
 
-        fixed_params = dict(fixed_params)
 
-        def lp_fn(theta: np.ndarray) -> float:
-            idx = 0
-            params = {}
-            for name in latent_names:
-                arr = np.asarray(samples[name])
-                if arr.ndim == 1:
-                    params[name] = jnp.array(theta[idx])
-                    idx += 1
-                else:
-                    size = arr.shape[1]
-                    params[name] = jnp.array(theta[idx : idx + size])
-                    idx += size
-            if include_log_amp and "log_amp" in samples:
-                params["log_amp"] = jnp.array(theta[idx])
-            params.update(fixed_params)
-            return float(log_density_fn(params))
-
-        res = morphz_evidence(
-            post_samples=post_samples,
-            log_posterior_values=logpost_values,
-            log_posterior_function=lp_fn,
-            n_resamples=2000,
-            morph_type="indep",
-            param_names=param_names,
-            output_path=str(outdir / f"morphZ_{label}"),
-            n_estimations=2,
-            verbose=False,
-        )
-        if len(res) == 0:
-            return float("nan"), float("nan")
-        return float(res[0][0]), float(res[0][1])
-    except Exception as exc:  # pragma: no cover - surface morphZ issues
-        import traceback
-        print(f"[morphZ] evidence failed for '{label}': {type(exc).__name__}: {exc}")
-        traceback.print_exc()
-        return float("nan"), float("nan")
+def _nested_evidence(
+    likelihood,
+    latent_names,
+    latent_sigma,
+    log_amp_sigma,
+    fixed_params,
+    rng_key,
+    *,
+    num_live_points: int,
+    max_samples: int,
+    num_posterior_samples: int,
+) -> EvidenceResult:
+    """Run nested sampling purely to obtain a fallback log-evidence."""
+    run = run_nested_sampling(
+        likelihood,
+        latent_names=latent_names,
+        fixed_params=fixed_params,
+        rng_key=rng_key,
+        latent_sigma=latent_sigma,
+        log_amp_sigma=log_amp_sigma,
+        num_live_points=num_live_points,
+        max_samples=max_samples,
+        num_posterior_samples=num_posterior_samples,
+    )
+    if not np.isfinite(run.logZ):
+        return EvidenceResult.failed("nested sampling produced a non-finite logZ", n_attempts=1)
+    return EvidenceResult(
+        logZ=float(run.logZ),
+        logZ_err=float(run.logZ_err),
+        method="nested",
+        status="ok",
+    )
 
 
 def _compute_log_bcr(logZ_signal: float, logZ_glitch: Mapping[str, float], logZ_noise: Mapping[str, float], alpha: float, beta: float) -> float:
@@ -404,14 +437,22 @@ def run_bcr_posteriors(
     nested_num_live_points: int = 500,
     nested_max_samples: int = 20000,
     nested_num_posterior_samples: Optional[int] = None,
+    flow: Optional[float] = None,
+    fmax: Optional[float] = None,
 ) -> Dict[str, Dict[str, float]]:
     detector_names = [det.upper() for det in detectors]
     bundle_map = _normalise_bundle_paths(bundle_paths)
 
+    prepare_kwargs = {}
+    if flow is not None:
+        prepare_kwargs["flow"] = flow
+    if fmax is not None:
+        prepare_kwargs["fmax"] = fmax
     prepared = prepare_multi_detector_data(
         detector_names,
         trigger_time=trigger_time,
         bundle_paths=bundle_map,
+        **prepare_kwargs,
     )
 
     base_outdir = Path(outdir)
@@ -503,9 +544,11 @@ def run_bcr_posteriors(
             title_prefix="Signal",
         )
 
+    evidence_status: Dict[str, Dict[str, object]] = {}
     if use_nested:
         signal_logZ = signal_result.logZ
         signal_logZ_err = signal_result.logZ_err
+        evidence_status["signal"] = {"method": "nested", "status": "ok"}
     else:
         signal_model_callable, _, _ = _build_numpyro_model(
             signal_likelihood,
@@ -514,7 +557,18 @@ def run_bcr_posteriors(
             log_amp_sigma_signal,
             extrinsics,
         )
-        signal_logZ, signal_logZ_err = _compute_morphz_evidence(
+        signal_fallback = lambda: _nested_evidence(
+            signal_likelihood,
+            signal_latent_names,
+            latent_sigma_signal,
+            log_amp_sigma_signal,
+            extrinsics,
+            jax.random.fold_in(signal_rng, 1000),
+            num_live_points=nested_num_live_points,
+            max_samples=nested_max_samples,
+            num_posterior_samples=nested_num_posterior_samples or num_samples,
+        )
+        signal_evidence = _compute_morphz_evidence(
             signal_result.samples,
             signal_result.extra.get("log_posterior"),
             signal_latent_names,
@@ -523,7 +577,15 @@ def run_bcr_posteriors(
             extrinsics,
             signal_dir if save_artifacts else base_outdir,
             "signal",
+            fallback=signal_fallback,
         )
+        signal_logZ = signal_evidence.logZ
+        signal_logZ_err = signal_evidence.logZ_err
+        evidence_status["signal"] = {
+            "method": signal_evidence.method,
+            "status": signal_evidence.status,
+            "n_attempts": signal_evidence.n_attempts,
+        }
     results["signal"]["logZ"] = signal_logZ
     results["signal"]["logZ_err"] = signal_logZ_err
 
@@ -600,6 +662,7 @@ def run_bcr_posteriors(
         if use_nested:
             glitch_logZ = glitch_result.logZ
             glitch_logZ_err = glitch_result.logZ_err
+            evidence_status[f"glitch_{det.name}"] = {"method": "nested", "status": "ok"}
         else:
             glitch_model_callable, _, _ = _build_numpyro_model(
                 glitch_likelihood,
@@ -608,7 +671,18 @@ def run_bcr_posteriors(
                 log_amp_sigma_glitch,
                 {},
             )
-            glitch_logZ, glitch_logZ_err = _compute_morphz_evidence(
+            glitch_fallback = lambda: _nested_evidence(
+                glitch_likelihood,
+                glitch_latent_names,
+                latent_sigma_glitch,
+                log_amp_sigma_glitch,
+                {},
+                jax.random.fold_in(glitch_rng, 1000),
+                num_live_points=nested_num_live_points,
+                max_samples=nested_max_samples,
+                num_posterior_samples=nested_num_posterior_samples or num_samples,
+            )
+            glitch_evidence = _compute_morphz_evidence(
                 glitch_result.samples,
                 glitch_result.extra.get("log_posterior"),
                 glitch_latent_names,
@@ -617,7 +691,15 @@ def run_bcr_posteriors(
                 {},
                 glitch_dir if save_artifacts else base_outdir,
                 f"glitch_{det.name.lower()}",
+                fallback=glitch_fallback,
             )
+            glitch_logZ = glitch_evidence.logZ
+            glitch_logZ_err = glitch_evidence.logZ_err
+            evidence_status[f"glitch_{det.name}"] = {
+                "method": glitch_evidence.method,
+                "status": glitch_evidence.status,
+                "n_attempts": glitch_evidence.n_attempts,
+            }
         results["glitch"][det.name] = glitch_logZ
         results["glitch_err"][det.name] = glitch_logZ_err
 
@@ -632,6 +714,14 @@ def run_bcr_posteriors(
     results["bcr_log"] = log_bcr
     results["bcr"] = float(np.exp(log_bcr)) if np.isfinite(log_bcr) else float("nan")
 
+    n_failed = sum(1 for s in evidence_status.values() if s.get("status") == "failed")
+    n_fallback = sum(1 for s in evidence_status.values() if s.get("status") == "fallback")
+    results["evidence_status"] = evidence_status
+    results["evidence_failures"] = n_failed
+    results["evidence_fallbacks"] = n_fallback
+    if n_failed:
+        print(f"[evidence] WARNING: {n_failed} evidence term(s) failed; BCR may be NaN.")
+
     if save_artifacts:
         summary = {
             "logZ_signal": results["signal"].get("logZ", float("nan")),
@@ -644,6 +734,9 @@ def run_bcr_posteriors(
             "alpha": alpha,
             "beta": beta,
             "lnz_method": lnz_method,
+            "evidence_status": evidence_status,
+            "evidence_failures": n_failed,
+            "evidence_fallbacks": n_fallback,
         }
         _write_summary_json(base_outdir, summary)
 
