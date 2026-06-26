@@ -4,13 +4,13 @@ from jax.scipy.special import logit
 from beartype import beartype as typechecker
 from jaxtyping import Float, Array, jaxtyped
 
-from jimgw.core.single_event.detector import GroundBased2G
-from jimgw.core.transforms import (
+from starccato_lvk.jimgw.core.single_event.detector import GroundBased2G
+from starccato_lvk.jimgw.core.transforms import (
     ConditionalBijectiveTransform,
     BijectiveTransform,
     reverse_bijective_transform,
 )
-from jimgw.core.single_event.utils import (
+from starccato_lvk.jimgw.core.single_event.utils import (
     m1_m2_to_Mc_q,
     Mc_q_to_m1_m2,
     m1_m2_to_Mc_eta,
@@ -24,7 +24,7 @@ from jimgw.core.single_event.utils import (
     cartesian_spin_to_spin_angles,
     carte_to_spherical_angles,
 )
-from jimgw.core.single_event.gps_times import (
+from starccato_lvk.jimgw.core.single_event.gps_times import (
     greenwich_mean_sidereal_time as compute_gmst,
 )
 

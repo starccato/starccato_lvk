@@ -8,7 +8,7 @@ from jaxtyping import Array, Float, PRNGKeyArray, jaxtyped
 from abc import abstractmethod
 import equinox as eqx
 
-from jimgw.core.transforms import (
+from starccato_lvk.jimgw.core.transforms import (
     BijectiveTransform,
     LogitTransform,
     ScaleTransform,

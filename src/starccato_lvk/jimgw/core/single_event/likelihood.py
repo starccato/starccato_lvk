@@ -5,14 +5,14 @@ from jax.scipy.special import logsumexp
 from jaxtyping import Array, Float
 from typing import Optional
 from scipy.interpolate import interp1d
-from jimgw.core.utils import log_i0
-from jimgw.core.prior import Prior
-from jimgw.core.base import LikelihoodBase
-from jimgw.core.transforms import BijectiveTransform, NtoMTransform
-from jimgw.core.single_event.detector import Detector
-from jimgw.core.single_event.waveform import Waveform
-from jimgw.core.single_event.utils import inner_product, complex_inner_product
-from jimgw.core.single_event.gps_times import (
+from starccato_lvk.jimgw.core.utils import log_i0
+from starccato_lvk.jimgw.core.prior import Prior
+from starccato_lvk.jimgw.core.base import LikelihoodBase
+from starccato_lvk.jimgw.core.transforms import BijectiveTransform, NtoMTransform
+from starccato_lvk.jimgw.core.single_event.detector import Detector
+from starccato_lvk.jimgw.core.single_event.waveform import Waveform
+from starccato_lvk.jimgw.core.single_event.utils import inner_product, complex_inner_product
+from starccato_lvk.jimgw.core.single_event.gps_times import (
     greenwich_mean_sidereal_time as compute_gmst,
 )
 import logging

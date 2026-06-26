@@ -8,15 +8,15 @@ import requests
 from beartype import beartype as typechecker
 from typing import Optional
 
-from jimgw.core.constants import (
+from starccato_lvk.jimgw.core.constants import (
     C_SI,
     EARTH_SEMI_MAJOR_AXIS,
     EARTH_SEMI_MINOR_AXIS,
     DEG_TO_RAD,
 )
-from jimgw.core.single_event.wave import Polarization
-from jimgw.core.single_event.data import Data, PowerSpectrum
-from jimgw.core.single_event.utils import inner_product, complex_inner_product
+from starccato_lvk.jimgw.core.single_event.wave import Polarization
+from starccato_lvk.jimgw.core.single_event.data import Data, PowerSpectrum
+from starccato_lvk.jimgw.core.single_event.utils import inner_product, complex_inner_product
 
 # TODO: Need to expand this list. Currently it is only O3.
 asd_file_dict = {
