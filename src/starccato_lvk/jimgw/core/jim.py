@@ -7,9 +7,9 @@ from flowMC.resource.buffers import Buffer
 from flowMC.Sampler import Sampler
 from jaxtyping import Array, Float, PRNGKeyArray
 
-from jimgw.core.base import LikelihoodBase
-from jimgw.core.prior import Prior
-from jimgw.core.transforms import BijectiveTransform, NtoMTransform
+from starccato_lvk.jimgw.core.base import LikelihoodBase
+from starccato_lvk.jimgw.core.prior import Prior
+from starccato_lvk.jimgw.core.transforms import BijectiveTransform, NtoMTransform
 
 
 class Jim(object):

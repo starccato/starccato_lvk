@@ -138,6 +138,9 @@ def _compute_morphz_evidence(
             return float("nan"), float("nan")
         return float(res[0][0]), float(res[0][1])
     except Exception:  # pragma: no cover - gracefully handle morphZ issues
+        import os, traceback
+        if os.environ.get("MORPHZ_DEBUG"):
+            traceback.print_exc()
         return float("nan"), float("nan")
 
 

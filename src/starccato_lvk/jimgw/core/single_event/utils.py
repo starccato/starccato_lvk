@@ -1,8 +1,8 @@
 import jax.numpy as jnp
 from jaxtyping import Array, Float, Complex
 
-from jimgw.core.constants import MTSUN
-from jimgw.core.utils import safe_arctan2, carte_to_spherical_angles
+from starccato_lvk.jimgw.core.constants import MTSUN
+from starccato_lvk.jimgw.core.utils import safe_arctan2, carte_to_spherical_angles
 
 
 def complex_inner_product(

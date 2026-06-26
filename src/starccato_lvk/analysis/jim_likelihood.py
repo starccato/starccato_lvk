@@ -199,8 +199,13 @@ def run_nested_sampling(
         logZ = float(ns.evidence)
         logZ_err = float(ns.evidence_error)
     except AttributeError:
-        logZ = float("nan")
-        logZ_err = float("nan")
+        results = getattr(ns, "_results", None)
+        if results is not None and hasattr(results, "log_Z_mean"):
+            logZ = float(results.log_Z_mean)
+            logZ_err = float(results.log_Z_uncert)
+        else:
+            logZ = float("nan")
+            logZ_err = float("nan")
 
     extra = {
         "weighted_samples": {name: np.asarray(values) for name, values in weighted_samples.items()},
