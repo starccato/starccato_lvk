@@ -13,7 +13,17 @@ from .utils import _get_fnames_for_range
 from .. import config
 
 DataFetcher = Callable[[float, float], TimeSeries]
-ANALYSIS_SAMPLES = 512
+
+# Analysis segment length, in seconds. This sets the frequency resolution of the
+# likelihood (df = 1/ANALYSIS_DURATION). It is matched to the PSD FFT length (see
+# ``generate_psd``, fftlength=4 s -> 0.25 Hz) so the data and PSD share a grid and
+# no interpolation mismatch inflates the whitened residuals. The intrinsic VAE
+# transient is only ~0.125 s and is zero-padded into this longer segment. A short
+# 0.125 s segment (the previous default) gave 8 Hz bins that could not whiten
+# narrow instrumental lines, inflating real-data evidences by ~1000x.
+ANALYSIS_DURATION = 4.0
+PSD_DURATION = 64.0  # seconds of data before the segment used to estimate the PSD
+PSD_GAP = 0.5  # seconds of separation between the PSD region and the analysis segment
 
 
 def strain_loader(
@@ -21,6 +31,8 @@ def strain_loader(
     outdir: str = None,
     data_fetcher: Optional[DataFetcher] = None,
     detector: Optional[str] = None,
+    analysis_duration: float = ANALYSIS_DURATION,
+    require_cat3: bool = True,
 ) -> tuple[TimeSeries, FrequencySeries]:
     """Load strain data and compute PSD around a trigger time, optionally saving to outdir.
 
@@ -34,6 +46,8 @@ def strain_loader(
         trigger_time,
         data_fetcher=data_fetcher,
         detector=detector,
+        analysis_duration=analysis_duration,
+        require_cat3=require_cat3,
     )
     if outdir:
         _save_analysis_chunk_and_psd(analysis_chunk, psd, full_data, trigger_time, outdir)
@@ -44,26 +58,39 @@ def load_analysis_chunk_and_psd(
     trigger_time: float,
     data_fetcher: Optional[DataFetcher] = None,
     detector: Optional[str] = None,
+    analysis_duration: float = ANALYSIS_DURATION,
+    require_cat3: bool = True,
 ) -> tuple[TimeSeries, FrequencySeries, TimeSeries]:
-    """Load strain data and compute PSD around a trigger time."""
-    analysis_start = trigger_time - 1
-    gps_start = analysis_start - 65
-    gps_end = trigger_time + 1
+    """Load strain data and compute PSD around a trigger time.
+
+    The analysis segment (length ``analysis_duration``) is centred on the trigger.
+    The PSD is estimated from ``PSD_DURATION`` seconds of data ending ``PSD_GAP``
+    seconds before the segment, so the PSD-estimation data does not overlap the
+    analysed segment.
+    """
+    half_seg = analysis_duration / 2.0
+    seg_start = trigger_time - half_seg
+    psd_end = seg_start - PSD_GAP
+    psd_start = psd_end - PSD_DURATION
+    gps_start = psd_start
+    gps_end = trigger_time + half_seg + PSD_GAP
     full_data = load_strain_segment(
         gps_start,
         gps_end,
         data_fetcher=data_fetcher,
         detector=detector,
+        require_cat3=require_cat3,
     )
 
     times = full_data.times.value
     values = full_data.value
     sample_rate = full_data.sample_rate.value
+    n_seg = int(round(analysis_duration * sample_rate))
 
     center_idx = int(np.argmin(np.abs(times - trigger_time)))
-    half = ANALYSIS_SAMPLES // 2
+    half = n_seg // 2
     start_idx = center_idx - half
-    end_idx = start_idx + ANALYSIS_SAMPLES
+    end_idx = start_idx + n_seg
 
     if start_idx < 0 or end_idx > len(values):
         raise ValueError(
@@ -79,7 +106,7 @@ def load_analysis_chunk_and_psd(
         unit=full_data.unit,
     )
 
-    psd_chunk = full_data.crop(gps_start, analysis_start)
+    psd_chunk = full_data.crop(psd_start, psd_end)
     psd = generate_psd(psd_chunk)
 
     return analysis_chunk, psd, full_data
@@ -161,8 +188,16 @@ def load_strain_segment(
     gps_end: float,
     data_fetcher: Optional[DataFetcher] = None,
     detector: Optional[str] = None,
+    require_cat3: bool = True,
 ) -> TimeSeries:
-    """Load strain data segment using a provided fetcher or local files."""
+    """Load strain data segment using a provided fetcher or local files.
+
+    ``require_cat3`` gates the GWOSC fallback on the CBC CAT3 data-quality flag.
+    This is appropriate for noise scenarios (we want clean data) but must be
+    disabled for the glitch scenario: a blip is precisely what CAT3 vetoes, so a
+    window containing one never passes and the fetch would refuse the very data
+    the analysis needs.
+    """
     fetcher = data_fetcher or _local_data_fetcher
     try:
         return fetcher(gps_start, gps_end)
@@ -177,7 +212,7 @@ def load_strain_segment(
                 f"detector {det} between {gps_start} and {gps_end}."
             )
             try:
-                if not _detector_cat3_online(det, gps_start, gps_end):
+                if require_cat3 and not _detector_cat3_online(det, gps_start, gps_end):
                     raise RuntimeError(
                         f"Detector {det} appears not CAT3-online for {gps_start}–{gps_end}. "
                         "Pick a different trigger time or detector, or supply local data."
