@@ -60,14 +60,19 @@ def _clone_no_response_detector(detector_obj):
 
 
 def _analytic_noise_logz(detector) -> float:
-    freqs = np.asarray(detector.sliced_frequencies)
-    if freqs.size < 2:
-        return float("nan")
-    df = float(freqs[1] - freqs[0])
-    data_fd = np.asarray(detector.sliced_fd_data)
-    psd = np.asarray(detector.sliced_psd)
-    inner = 4.0 * df * np.real(np.sum(np.conj(data_fd) * data_fd / psd))
-    return float(-0.5 * inner)
+    """Log-evidence of the noise-only hypothesis, in the JIM likelihood convention.
+
+    The JIM transient likelihood is noise-relative: it evaluates
+    ``log L = sum_det [<h|d> - <h|h>/2]`` and drops the parameter-independent
+    ``-<d|d>/2`` and ``log(2*pi*PSD)`` normalisation constants. The signal and
+    glitch evidences (from morphZ / nested sampling) are therefore implicitly
+    ratios relative to noise, i.e. ``log(Z_X / Z_noise)``. Because the signal
+    likelihood sums over all detectors while each glitch/noise term is
+    per-detector, the dropped per-detector constants cancel exactly in the BCR
+    ratio (see derivation in docs). The self-consistent noise reference in this
+    convention is therefore simply ``log Z_noise = 0`` for every detector.
+    """
+    return 0.0
 
 
 def _compute_morphz_evidence(
@@ -128,7 +133,7 @@ def _compute_morphz_evidence(
             log_posterior_values=logpost_values,
             log_posterior_function=lp_fn,
             n_resamples=2000,
-            morph_type="pair",
+            morph_type="indep",
             param_names=param_names,
             output_path=str(outdir / f"morphZ_{label}"),
             n_estimations=2,
@@ -137,10 +142,10 @@ def _compute_morphz_evidence(
         if len(res) == 0:
             return float("nan"), float("nan")
         return float(res[0][0]), float(res[0][1])
-    except Exception:  # pragma: no cover - gracefully handle morphZ issues
-        import os, traceback
-        if os.environ.get("MORPHZ_DEBUG"):
-            traceback.print_exc()
+    except Exception as exc:  # pragma: no cover - surface morphZ issues
+        import traceback
+        print(f"[morphZ] evidence failed for '{label}': {type(exc).__name__}: {exc}")
+        traceback.print_exc()
         return float("nan"), float("nan")
 
 
