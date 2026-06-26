@@ -53,7 +53,16 @@ def build_transient_likelihood(
     duration: float,
     post_trigger_duration: float,
 ) -> TransientLikelihoodFD:
-    """Construct a JIM transient likelihood from prepared detectors and waveform."""
+    """Construct a JIM transient likelihood from prepared detectors and waveform.
+
+    NOTE: the likelihood evaluates over the *full* rfft grid (its ``__init__``
+    resets the detector frequency bounds to ``[0, inf]``, and the Starccato
+    waveform requires the full grid anyway). The analysis band ``[flow, fmax]``
+    and line notches are therefore enforced through the detector PSD, whose values
+    are set to ``+inf`` outside the band and at lines (see
+    ``multidet_data_prep._frequency_domain_representation``); those bins then
+    contribute zero to the matched-filter inner product.
+    """
     return TransientLikelihoodFD(
         detectors=detectors,
         waveform=waveform,

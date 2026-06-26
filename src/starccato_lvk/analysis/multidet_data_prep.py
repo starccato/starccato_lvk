@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import copy
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
@@ -80,6 +81,34 @@ class MultiDetPreparedData:
     roll_off: float
 
 
+# Median per-bin whitened power above which we warn of a PSD/data mismatch.
+# For data described by the PSD (e.g. Gaussian noise) the median is ~1; a
+# localized transient leaves the median near 1 (it lifts only a few bins), so a
+# threshold of 3 flags a genuine mismatch -- such as an analysis segment too
+# short to whiten narrow spectral lines -- without false-positiving on signals.
+WHITENED_POWER_WARN = 3.0
+
+
+def whitened_band_power(det: "DetectorTimeseries") -> Dict[str, float]:
+    """Per-bin whitened power ``2|d|^2 df / S`` over the analysis band.
+
+    This is the data-quality gate for the matched-filter likelihood: if the data
+    are well described by the PSD, the per-bin whitened power has mean ~1, so a
+    large median signals that inner products (and therefore evidences) will be
+    inflated. The classic cause is an analysis segment whose frequency resolution
+    is too coarse to represent and whiten narrow instrumental lines.
+    """
+    mask = np.asarray(det.band_mask)
+    dfd = np.asarray(det.data_fd_likelihood)[mask]
+    psd = np.asarray(det.psd_likelihood)[mask]
+    per_bin = 2.0 * np.abs(dfd) ** 2 / psd * det.df
+    return {
+        "median": float(np.median(per_bin)),
+        "mean": float(np.mean(per_bin)),
+        "n_bins": int(mask.sum()),
+    }
+
+
 DETECTOR_PRESETS = {name.upper(): det for name, det in jim_detector.get_detector_preset().items()}
 
 
@@ -132,6 +161,44 @@ def _analysis_from_bundle(bundle_path: Path) -> Tuple[TimeSeries, FrequencySerie
     return strain, psd, full_strain, float(trigger_time)
 
 
+def _line_notch_mask(
+    freq: np.ndarray,
+    psd: np.ndarray,
+    band_mask: np.ndarray,
+    *,
+    threshold: float,
+    width_bins: int,
+    smooth_hz: float = 4.0,
+) -> np.ndarray:
+    """Return ``band_mask`` with narrow spectral lines removed.
+
+    Lines are identified from the PSD alone (a noise property, so the notch does
+    not depend on the data and cannot bias the likelihood toward any signal): a
+    bin is a line if its PSD exceeds ``threshold`` times a running-median local
+    floor. Each line is widened by ``width_bins`` on each side to also drop the
+    spectral leakage that an extremely loud, high-Q line (e.g. a violin mode)
+    spreads into neighbouring bins -- leakage a single-segment FFT whitens
+    differently from the Welch-averaged PSD, which is why such lines otherwise
+    dominate the inner product.
+    """
+    from scipy.signal import medfilt
+
+    df = float(freq[1] - freq[0])
+    kernel = max(3, int(round(smooth_hz / df)))
+    kernel += 1 - (kernel % 2)  # medfilt needs an odd kernel
+    floor = medfilt(psd, kernel_size=kernel)
+    floor = np.where(floor > 0, floor, np.median(psd[psd > 0]) if np.any(psd > 0) else 1.0)
+
+    is_line = (psd > threshold * floor) & band_mask
+    if width_bins > 0 and is_line.any():
+        idx = np.where(is_line)[0]
+        n = is_line.shape[0]
+        for d in range(1, width_bins + 1):
+            is_line[np.clip(idx - d, 0, n - 1)] = True
+            is_line[np.clip(idx + d, 0, n - 1)] = True
+    return band_mask & ~is_line
+
+
 def _frequency_domain_representation(
     strain: TimeSeries,
     psd: FrequencySeries,
@@ -140,6 +207,9 @@ def _frequency_domain_representation(
     fmax: float,
     roll_off: float,
     detector_name: str,
+    notch_lines: bool = True,
+    line_threshold: float = 8.0,
+    line_width_bins: int = 3,
 ) -> DetectorTimeseries:
     """Convert time series and PSD into aligned frequency-domain arrays."""
     strain_values = np.asarray(strain.value, dtype=np.float64)
@@ -165,19 +235,42 @@ def _frequency_domain_representation(
     eps = np.finfo(np.float64).tiny
     psd_interp = np.where(psd_interp > 0, psd_interp, eps)
 
-    band_mask = (freq >= flow) & (freq <= fmax)
-    psd_likelihood = np.where(band_mask, psd_interp, np.inf)
-    data_fd_likelihood = np.where(band_mask, data_fd_full, 0.0)
+    in_band = (freq >= flow) & (freq <= fmax)
+    keep_mask = in_band
+    if notch_lines:
+        keep_mask = _line_notch_mask(
+            freq, psd_interp, in_band,
+            threshold=line_threshold, width_bins=line_width_bins,
+        )
+    # PSD seen by the LIKELIHOOD (det.psd -> sliced_psd). The likelihood evaluates over the
+    # FULL rfft grid (it resets detector bounds to [0, inf] and the waveform needs the full
+    # grid), so the analysis band AND the line notches are both enforced here by setting the
+    # PSD to +inf outside [flow, fmax] and at line bins: 4|h|^2/inf = 0 drops those bins from
+    # the matched-filter inner product. Without this, the band/notch never reach inference --
+    # the seismic wall (<flow), violin modes and >fmax are included, and a flexible waveform
+    # rails its amplitude onto those un-whitened bins, inflating evidences on pure noise.
+    psd_likelihood = np.where(keep_mask, psd_interp, np.inf)
+    data_fd_likelihood = np.where(keep_mask, data_fd_full, 0.0)
+    band_mask = keep_mask
 
+    # Epoch is consumed only by ``fd_response``, as ``time_shift += trigger_time -
+    # epoch + t_c``. That term is meant to slide a waveform anchored at t=0 to the
+    # trigger, but the Starccato waveforms are generated PRE-CENTRED in the segment
+    # (peak at the segment midpoint = trigger). Anchoring epoch at ``trigger_time``
+    # makes ``trigger_time - epoch = 0`` so the pre-centred waveform stays centred;
+    # otherwise it is shifted by ~duration/2 to the segment edge, wraps under the
+    # periodic FFT, and the waveform model gains spurious freedom to fit noise
+    # (inflating the noise-only evidence). The physical geocentre delay -- which
+    # carries multi-detector coherence -- is added separately and is preserved.
     data_obj = InterferometerData(
         name=detector_name,
         time_domain=zero_mean,
         window=window,
         delta_t=dt,
-        epoch=rel_time[0],
+        epoch=float(trigger_time),
     )
     power_spectrum = jim_data.PowerSpectrum(
-        values=jnp.asarray(psd_interp, dtype=jnp.float64),
+        values=jnp.asarray(psd_likelihood, dtype=jnp.float64),
         frequencies=jnp.asarray(freq, dtype=jnp.float64),
         name=detector_name,
     )
@@ -261,6 +354,17 @@ def prepare_multi_detector_data(
                 np.asarray(data.data.window), reference_window, atol=1e-6
             ):
                 raise ValueError("Window mismatch between detectors; ensure consistent data preparation.")
+
+        wp = whitened_band_power(data)
+        if wp["median"] > WHITENED_POWER_WARN:
+            warnings.warn(
+                f"[{det_upper}] median whitened band power {wp['median']:.1f} (mean "
+                f"{wp['mean']:.1f}) over {wp['n_bins']} bins is >> 1: the PSD does not "
+                "describe the data. Inner products and evidences will be inflated. "
+                "Common cause: analysis segment too short to whiten narrow spectral "
+                f"lines (df={data.df:.3g} Hz).",
+                stacklevel=2,
+            )
         detector_data[det_upper] = data
 
     # Consistency checks across detectors
