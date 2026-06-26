@@ -7,9 +7,9 @@ from typing import Dict, Iterable, List, Mapping, Optional, Sequence
 
 import h5py
 import numpy as np
+import jax.numpy as jnp
 import yaml
 import pandas as pd
-from astropy.time import Time
 import click
 
 from starccato_jax.waveforms import get_model
@@ -17,6 +17,7 @@ from starccato_jax.waveforms import get_model
 from ..acquisition.io.strain_loader import strain_loader
 from ..analysis import run_bcr_posteriors
 from ..analysis.jim_waveform import StarccatoJimWaveform
+from ..analysis.multidet_data_prep import prepare_multi_detector_data
 from ..acquisition.io.glitch_catalog import get_blip_trigger_time
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]
@@ -212,6 +213,40 @@ def inject_signal(
     model = get_model(cfg.signal_model)
     outdir.mkdir(parents=True, exist_ok=True)
 
+    # Prepare the detectors exactly as the recovery does. The detector response
+    # (in particular the time-delay reference) depends on the data epoch set
+    # during preparation, so projecting the injection with these prepared
+    # detectors guarantees the injected signal lands at the same time the
+    # coherent-signal template expects. Using a bare detector clone here places
+    # the signal at the wrong epoch and the recovery cannot match it.
+    prepared = prepare_multi_detector_data(
+        [d.upper() for d in bundle_paths],
+        bundle_paths={d.upper(): Path(p) for d, p in bundle_paths.items()},
+    )
+    det_by_name = {d.name.upper(): d for d in prepared.detectors}
+    n = prepared.window.shape[0]
+    dt = prepared.detector_data[next(iter(prepared.detector_data))].dt
+    sample_rate = 1.0 / dt
+    freqs = jnp.asarray(np.fft.rfftfreq(n, d=dt))
+
+    waveform = StarccatoJimWaveform(
+        model=model, sample_rate=sample_rate, window=prepared.window
+    )
+    params = {name: 0.0 for name in waveform.latent_names}
+    params["log_amp"] = -np.log(distance_scale)
+    params.update(
+        {
+            "t_c": 0.0,
+            "ra": 0.0,
+            "dec": 0.0,
+            "psi": 0.0,
+            "luminosity_distance": distance_scale,
+            "gmst": float(prepared.gmst),
+            "trigger_time": float(prepared.trigger_time),
+        }
+    )
+    h_sky = waveform(freqs, params)
+
     injected: Dict[str, Path] = {}
     for det, bundle in bundle_paths.items():
         dest = outdir / f"{bundle.stem}_inj.hdf5"
@@ -221,36 +256,22 @@ def inject_signal(
 
         with h5py.File(bundle, "r") as src:
             strain_vals = np.array(src["strain"]["values"])
-            dt = float(src["strain"].attrs["dt"])
             attrs = dict(src["strain"].attrs)
 
-        sample_rate = 1.0 / dt
-        waveform = StarccatoJimWaveform(model=model, sample_rate=sample_rate)
-        params = {name: 0.0 for name in waveform.latent_names}
-        params["log_amp"] = -np.log(distance_scale)
-        gmst = Time(gps, format="gps").sidereal_time("apparent", "greenwich").rad
-        params.update(
-            {
-                "t_c": 0.0,
-                "ra": 0.0,
-                "dec": 0.0,
-                "psi": 0.0,
-                "luminosity_distance": distance_scale,
-                "gmst": float(gmst),
-                "trigger_time": gps,
-            }
-        )
-
-        wf_td = waveform.time_domain_waveform_numpy(params)
-        if len(wf_td) > len(strain_vals):
-            wf_td = wf_td[: len(strain_vals)]
-        pad_left = (len(strain_vals) - len(wf_td)) // 2
-        pad_right = len(strain_vals) - len(wf_td) - pad_left
-        wf_td = np.pad(wf_td, (pad_left, pad_right))
+        # Project the shared sky-frame waveform through THIS detector's response
+        # (antenna pattern + time delay) so the injection is coherent across the
+        # network and consistent with the coherent-signal recovery model.
+        det_obj = det_by_name[det.upper()]
+        h_dec = np.asarray(det_obj.fd_response(freqs, h_sky, params))
+        wf_td = np.fft.irfft(h_dec, n=n) / dt
         injected_strain = strain_vals + wf_td
 
         with h5py.File(dest, "w") as dst:
             with h5py.File(bundle, "r") as src:
+                # Preserve root-level metadata (e.g. trigger_time) required by
+                # load_analysis_bundle / prepare_multi_detector_data.
+                for key, value in src.attrs.items():
+                    dst.attrs[key] = value
                 src.copy("psd", dst)
                 if "full_strain" in src:
                     src.copy("full_strain", dst)
