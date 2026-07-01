@@ -41,7 +41,7 @@ def plot_data_overview(prepared: MultiDetPreparedData, outpath: Path) -> None:
         data_asd_full = gwutils.asd_from_freq_series(data.data_fd_likelihood, prepared.df)
         data_asd = data_asd_full[finite_mask]
         if data_asd.size > 0:
-            freq_ax.loglog(freqs, data_asd, color="tab:orange", lw=0.8, alpha=0.7, label="Data ASD")
+            freq_ax.loglog(freqs_masked, data_asd, color="tab:orange", lw=0.8, alpha=0.7, label="Data ASD")
         freq_ax.set_title(f"{det_name} frequency domain")
         freq_ax.set_xlabel("Frequency [Hz]")
         freq_ax.set_ylabel("Strain / sqrt(Hz)")

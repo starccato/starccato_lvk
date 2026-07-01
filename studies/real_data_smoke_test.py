@@ -44,7 +44,13 @@ from starccato_lvk.acquisition.io.glitch_catalog import get_blip_trigger_time
 
 
 def _build_bundle(t: float, outdir: Path, detector: str = "L1") -> Path:
-    """Fetch real GWOSC strain at ``t`` and write an analysis bundle (no CAT3 gate)."""
+    """Build an analysis bundle at ``t`` from LOCAL strain if mirrored, else GWOSC.
+
+    ``data_fetcher=None`` tries the local mirror first (``config.DATA_DIRS`` -> no
+    internet, no CAT3 gate; ideal on OzSTAR), and only falls back to a GWOSC fetch
+    when no local file is found. ``require_cat3=False`` so the GWOSC fallback also
+    works for blip times (a blip fails the CAT3 veto by construction).
+    """
     outdir.mkdir(parents=True, exist_ok=True)
     existing = list(outdir.glob("analysis_bundle_*.hdf5"))
     if existing:
@@ -52,8 +58,9 @@ def _build_bundle(t: float, outdir: Path, detector: str = "L1") -> Path:
     strain_loader(
         trigger_time=t,
         outdir=str(outdir),
-        data_fetcher=_remote_data_fetcher(detector),
+        data_fetcher=None,
         detector=detector,
+        require_cat3=False,
     )
     bundles = list(outdir.glob("analysis_bundle_*.hdf5"))
     if not bundles:
@@ -62,7 +69,7 @@ def _build_bundle(t: float, outdir: Path, detector: str = "L1") -> Path:
 
 
 def _bcr(cfg, bundle_paths: dict, outdir: Path, *, num_warmup: int, num_samples: int, seed: int,
-        flow: float, fmax: float) -> dict:
+        flow: float, fmax: float, noise_scale_marginal: bool = False) -> dict:
     return run_bcr_posteriors(
         detectors=["L1"],
         outdir=str(outdir),
@@ -84,6 +91,7 @@ def _bcr(cfg, bundle_paths: dict, outdir: Path, *, num_warmup: int, num_samples:
         lnz_method="morph",
         flow=flow,
         fmax=fmax,
+        noise_scale_marginal=noise_scale_marginal,
     )
 
 
@@ -115,6 +123,9 @@ def main() -> None:
     p.add_argument("--flow", type=float, default=256.0, help="Low-frequency cutoff (avoid the seismic/scattered-light wall).")
     p.add_argument("--fmax", type=float, default=896.0, help="High-frequency cutoff (avoid violin modes).")
     p.add_argument("--scenarios", nargs="+", default=["noise", "noise_inj", "blip"])
+    p.add_argument("--noise-scale-marginal", action="store_true",
+                   help="Use the PSD-amplitude-marginal likelihood (robust to non-stationary / "
+                        "mis-estimated real-data PSDs).")
     args = p.parse_args()
 
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -154,6 +165,7 @@ def main() -> None:
                 cfg, bundles, args.outdir / scenario / "analysis",
                 num_warmup=args.num_warmup, num_samples=args.num_samples,
                 seed=args.blip_index, flow=args.flow, fmax=args.fmax,
+                noise_scale_marginal=args.noise_scale_marginal,
             )
         except Exception as exc:  # noqa: BLE001 - smoke test: report, don't abort
             print(f"[smoke] scenario '{scenario}' FAILED: {type(exc).__name__}: {exc}")

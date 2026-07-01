@@ -149,14 +149,24 @@ def generate_psd(data: TimeSeries) -> FrequencySeries:
     )
 
 
-def _local_data_fetcher(gps_start: float, gps_end: float) -> TimeSeries:
-    files = _get_fnames_for_range(gps_start, gps_end)
-    files_avail = [f for f in files if os.path.exists(f)]
-    if len(files_avail) == 0:
-        raise FileNotFoundError(
-            f"No data files found for GPS range {gps_start} to {gps_end}. Checked files: {files}"
-        )
-    return TimeSeries.read(files_avail, format="hdf5.gwosc", start=gps_start, end=gps_end)
+def _local_data_fetcher(detector: Optional[str] = None) -> DataFetcher:
+    """Return a fetcher reading the local GWOSC mirror (``config.DATA_DIRS``) for ``detector``.
+
+    Reading local strain needs no internet and applies no CAT3 gate -- ideal on
+    a cluster (e.g. OzSTAR) where the LVK data is mirrored on disk and compute
+    nodes are offline. Passing the detector is essential for multi-detector runs
+    so H1 does not read L1 files.
+    """
+    def fetch(gps_start: float, gps_end: float) -> TimeSeries:
+        files = _get_fnames_for_range(gps_start, gps_end, detector=detector)
+        files_avail = [f for f in files if os.path.exists(f)]
+        if len(files_avail) == 0:
+            raise FileNotFoundError(
+                f"No local data files for {detector} GPS {gps_start}-{gps_end}. Checked: {files}"
+            )
+        return TimeSeries.read(files_avail, format="hdf5.gwosc", start=gps_start, end=gps_end)
+
+    return fetch
 
 
 def _remote_data_fetcher(detector: str) -> DataFetcher:
@@ -198,7 +208,7 @@ def load_strain_segment(
     window containing one never passes and the fetch would refuse the very data
     the analysis needs.
     """
-    fetcher = data_fetcher or _local_data_fetcher
+    fetcher = data_fetcher or _local_data_fetcher(detector)
     try:
         return fetcher(gps_start, gps_end)
     except FileNotFoundError as err:
