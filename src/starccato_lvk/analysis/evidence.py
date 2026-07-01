@@ -30,6 +30,7 @@ except ImportError:  # pragma: no cover - optional dependency
 STATUS_OK = "ok"
 STATUS_FALLBACK = "fallback"
 STATUS_FAILED = "failed"
+STATUS_VERIFIED = "verified"  # morphZ cross-checked against nested and kept
 
 
 @dataclass
@@ -162,40 +163,72 @@ def evidence_with_fallback(
     log_posterior_function: Callable[[np.ndarray], float],
     *,
     fallback: Optional[Callable[[], "EvidenceResult"]] = None,
+    verify: bool = False,
+    verify_tol: float = 3.0,
+    verify_logz_threshold: Optional[float] = None,
     **morphz_kwargs,
 ) -> EvidenceResult:
-    """Run morphZ; if it fails, defer to ``fallback`` (typically nested sampling).
+    """Run morphZ; defer to ``fallback`` (nested) on failure, and optionally cross-check.
 
-    ``fallback`` is a zero-argument callable returning an :class:`EvidenceResult`
-    so the caller controls the (potentially expensive) alternative estimator and
-    its configuration. When morphZ fails and no fallback is supplied, the failed
-    morphZ result is returned unchanged.
+    ``fallback`` is a zero-argument callable returning an :class:`EvidenceResult`.
+
+    With ``verify=True`` the fallback also runs when morphZ *succeeds*, as a
+    cross-check: morphZ is known to give finite-but-wrong evidences on hard
+    posteriors (e.g. a railed amplitude on a loud event), which the failure path
+    cannot catch. If morphZ and nested disagree by more than ``verify_tol`` nats
+    we trust nested; otherwise morphZ is kept (faster) and flagged ``verified``.
+    Callers should set ``verify`` only when the posterior is suspect (railed /
+    high-SNR), since the cross-check costs a nested run.
     """
     result = morphz_log_evidence(post_samples, log_posterior_function, **morphz_kwargs)
-    if result.ok or fallback is None:
+    failed = not result.ok
+    # Cross-check loud events too: morphZ is unreliable when the evidence is large
+    # (tight, high-SNR posteriors), exactly where the verdict matters most.
+    high_logz = (verify_logz_threshold is not None and result.ok
+                 and abs(result.logZ) > verify_logz_threshold)
+    do_verify = verify or high_logz
+    if fallback is None or (not failed and not do_verify):
         return result
 
     try:
         fb = fallback()
     except Exception as exc:  # noqa: BLE001
-        return EvidenceResult.failed(
-            f"morphZ failed ({result.message}); fallback raised {type(exc).__name__}: {exc}",
-            n_attempts=result.n_attempts,
-        )
+        if failed:
+            return EvidenceResult.failed(
+                f"morphZ failed ({result.message}); fallback raised {type(exc).__name__}: {exc}",
+                n_attempts=result.n_attempts,
+            )
+        return result  # verification could not run; keep the finite morphZ value
 
     if fb is None or not np.isfinite(fb.logZ):
-        return EvidenceResult.failed(
-            f"morphZ failed ({result.message}); fallback produced no finite estimate",
-            n_attempts=result.n_attempts,
+        if failed:
+            return EvidenceResult.failed(
+                f"morphZ failed ({result.message}); fallback produced no finite estimate",
+                n_attempts=result.n_attempts,
+            )
+        return result
+
+    fb_method = fb.method if fb.method not in ("none", "") else "nested"
+    if failed:
+        return EvidenceResult(
+            logZ=float(fb.logZ), logZ_err=float(fb.logZ_err), method=fb_method,
+            status=STATUS_FALLBACK, n_attempts=result.n_attempts,
+            message=f"morphZ failed ({result.message}); used fallback",
         )
 
+    # Cross-check: morphZ succeeded but the posterior was flagged suspect.
+    disagree = abs(result.logZ - fb.logZ)
+    if disagree > verify_tol:
+        return EvidenceResult(
+            logZ=float(fb.logZ), logZ_err=float(fb.logZ_err), method=fb_method,
+            status=STATUS_FALLBACK, n_attempts=result.n_attempts,
+            message=(f"morphZ {result.logZ:.1f} disagrees with nested {fb.logZ:.1f} "
+                     f"by {disagree:.1f} nats (railed/high-SNR) -> nested"),
+        )
     return EvidenceResult(
-        logZ=float(fb.logZ),
-        logZ_err=float(fb.logZ_err),
-        method=fb.method if fb.method not in ("none", "") else "nested",
-        status=STATUS_FALLBACK,
-        n_attempts=result.n_attempts,
-        message=f"morphZ failed ({result.message}); used fallback",
+        logZ=float(result.logZ), logZ_err=float(result.logZ_err), method="morph",
+        status=STATUS_VERIFIED, n_attempts=result.n_attempts,
+        message=f"verified vs nested (|delta|={disagree:.1f} nats)",
     )
 
 

@@ -9459,7 +9459,7 @@ wheels = [
 
 [[package]]
 name = "starccato-lvk"
-version = "0.0.3.dev25+gbb4502d29.d20260626"
+version = "0.0.3.dev27+gb390a8919.d20260627"
 source = { editable = "." }
 dependencies = [
     { name = "arviz", version = "0.16.0", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.10'" },

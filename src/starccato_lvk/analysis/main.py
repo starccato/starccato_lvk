@@ -83,15 +83,25 @@ def _compute_morphz_evidence(
     label: str,
     *,
     fallback: Optional[Callable[[], EvidenceResult]] = None,
+    log_amp_sigma: float = 1.0,
+    verify_logz_threshold: Optional[float] = 50.0,
+    rail_sigma: float = 2.5,
 ) -> EvidenceResult:
     """Estimate ``log Z`` from NUTS samples with morphZ (+ optional fallback).
 
     Returns an :class:`EvidenceResult` so callers can record which estimator
     produced the value and surface morphZ failures instead of silently emitting
-    ``NaN`` into the BCR.
+    ``NaN`` into the BCR. When the ``log_amp`` posterior is railed (mean beyond
+    ``rail_sigma`` prior sigmas) or the evidence is large, the nested ``fallback``
+    is run as a cross-check, because morphZ gives finite-but-wrong evidences on
+    such hard posteriors.
     """
     if log_posterior is None:
         return EvidenceResult.failed("no log-posterior values supplied", n_attempts=0)
+
+    railed = False
+    if include_log_amp and "log_amp" in samples and log_amp_sigma > 0:
+        railed = bool(abs(float(np.mean(samples["log_amp"]))) > rail_sigma * log_amp_sigma)
 
     outdir.mkdir(parents=True, exist_ok=True)
     columns: list[np.ndarray] = []
@@ -140,6 +150,8 @@ def _compute_morphz_evidence(
         output_path=outdir,
         label=label,
         fallback=fallback,
+        verify=railed,
+        verify_logz_threshold=verify_logz_threshold,
     )
     if not result.ok:
         print(f"[evidence] '{label}' failed: {result.message}")
@@ -159,6 +171,9 @@ def _nested_evidence(
     num_live_points: int,
     max_samples: int,
     num_posterior_samples: int,
+    noise_scale_marginal: bool = False,
+    nsm_a: float = 100.0,
+    nsm_b: Optional[float] = None,
 ) -> EvidenceResult:
     """Run nested sampling purely to obtain a fallback log-evidence."""
     run = run_nested_sampling(
@@ -171,6 +186,9 @@ def _nested_evidence(
         num_live_points=num_live_points,
         max_samples=max_samples,
         num_posterior_samples=num_posterior_samples,
+        noise_scale_marginal=noise_scale_marginal,
+        nsm_a=nsm_a,
+        nsm_b=nsm_b,
     )
     if not np.isfinite(run.logZ):
         return EvidenceResult.failed("nested sampling produced a non-finite logZ", n_attempts=1)
@@ -422,9 +440,9 @@ def run_bcr_posteriors(
     glitch_model: str = "blip",
     extrinsic_params: Optional[Dict[str, float]] = None,
     latent_sigma_signal: float | Sequence[float] = 1.0,
-    log_amp_sigma_signal: float = 1.0,
+    log_amp_sigma_signal: float = 5.0,
     latent_sigma_glitch: float | Sequence[float] = 1.0,
-    log_amp_sigma_glitch: float = 1.0,
+    log_amp_sigma_glitch: float = 5.0,
     num_samples: int = 1000,
     num_warmup: int = 500,
     num_chains: int = 1,
@@ -439,9 +457,14 @@ def run_bcr_posteriors(
     nested_num_posterior_samples: Optional[int] = None,
     flow: Optional[float] = None,
     fmax: Optional[float] = None,
+    noise_scale_marginal: bool = False,
+    nsm_a: float = 100.0,
+    nsm_b: Optional[float] = None,
+    verify_logz_threshold: Optional[float] = 50.0,
 ) -> Dict[str, Dict[str, float]]:
     detector_names = [det.upper() for det in detectors]
     bundle_map = _normalise_bundle_paths(bundle_paths)
+    nsm_kwargs = dict(noise_scale_marginal=noise_scale_marginal, nsm_a=nsm_a, nsm_b=nsm_b)
 
     prepare_kwargs = {}
     if flow is not None:
@@ -511,6 +534,7 @@ def run_bcr_posteriors(
             num_live_points=nested_num_live_points,
             max_samples=nested_max_samples,
             num_posterior_samples=nested_num_posterior_samples or num_samples,
+            **nsm_kwargs,
         )
     else:
         signal_result = run_numpyro_sampling(
@@ -523,6 +547,7 @@ def run_bcr_posteriors(
             num_warmup=num_warmup,
             num_samples=num_samples,
             num_chains=num_chains,
+            **nsm_kwargs,
         )
 
     _report_effective_sample_sizes("signal", signal_result.extra.get("samples_grouped"))
@@ -556,6 +581,7 @@ def run_bcr_posteriors(
             latent_sigma_signal,
             log_amp_sigma_signal,
             extrinsics,
+            **nsm_kwargs,
         )
         signal_fallback = lambda: _nested_evidence(
             signal_likelihood,
@@ -567,6 +593,7 @@ def run_bcr_posteriors(
             num_live_points=nested_num_live_points,
             max_samples=nested_max_samples,
             num_posterior_samples=nested_num_posterior_samples or num_samples,
+            **nsm_kwargs,
         )
         signal_evidence = _compute_morphz_evidence(
             signal_result.samples,
@@ -578,6 +605,8 @@ def run_bcr_posteriors(
             signal_dir if save_artifacts else base_outdir,
             "signal",
             fallback=signal_fallback,
+            log_amp_sigma=log_amp_sigma_signal,
+            verify_logz_threshold=verify_logz_threshold,
         )
         signal_logZ = signal_evidence.logZ
         signal_logZ_err = signal_evidence.logZ_err
@@ -625,6 +654,7 @@ def run_bcr_posteriors(
                 num_live_points=nested_num_live_points,
                 max_samples=nested_max_samples,
                 num_posterior_samples=nested_num_posterior_samples or num_samples,
+                **nsm_kwargs,
             )
         else:
             glitch_result = run_numpyro_sampling(
@@ -638,6 +668,7 @@ def run_bcr_posteriors(
                 num_samples=num_samples,
                 num_chains=num_chains,
                 init_strategy=init_to_value(values=init_values),
+                **nsm_kwargs,
             )
 
         _report_effective_sample_sizes(f"glitch {det.name}", glitch_result.extra.get("samples_grouped"))
@@ -670,6 +701,7 @@ def run_bcr_posteriors(
                 latent_sigma_glitch,
                 log_amp_sigma_glitch,
                 {},
+                **nsm_kwargs,
             )
             glitch_fallback = lambda: _nested_evidence(
                 glitch_likelihood,
@@ -681,6 +713,7 @@ def run_bcr_posteriors(
                 num_live_points=nested_num_live_points,
                 max_samples=nested_max_samples,
                 num_posterior_samples=nested_num_posterior_samples or num_samples,
+                **nsm_kwargs,
             )
             glitch_evidence = _compute_morphz_evidence(
                 glitch_result.samples,
@@ -692,6 +725,8 @@ def run_bcr_posteriors(
                 glitch_dir if save_artifacts else base_outdir,
                 f"glitch_{det.name.lower()}",
                 fallback=glitch_fallback,
+                log_amp_sigma=log_amp_sigma_glitch,
+                verify_logz_threshold=verify_logz_threshold,
             )
             glitch_logZ = glitch_evidence.logZ
             glitch_logZ_err = glitch_evidence.logZ_err

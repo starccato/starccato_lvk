@@ -86,10 +86,37 @@ def _build_numpyro_model(
     latent_sigma,
     log_amp_sigma,
     fixed_params,
+    noise_scale_marginal: bool = False,
+    nsm_a: float = 100.0,
+    nsm_b: float | None = None,
 ):
+    """Build the NumPyro model for the signal/glitch posterior.
+
+    With ``noise_scale_marginal`` the Gaussian likelihood is replaced by its
+    PSD-amplitude-marginalised form: a single global noise scale ``eta`` (PSD =
+    ``eta * S``) with an inverse-gamma prior is integrated out analytically,
+    yielding the noise-relative log-likelihood
+
+        log L = -(N + a) [ log(R/2 + b) - log(<d|d>/2 + b) ],   R = <d|d> - 2 log L_jim
+
+    where ``N`` is the total in-band bin count and ``<d|d>`` is summed over
+    detectors. This is 0 at ``h = 0`` (so ``logZ_noise = 0`` still holds), reduces
+    to the Gaussian when the PSD is correct, and discounts spurious residual
+    reduction by ~``1/eta`` when the data are louder than the PSD -- making the
+    evidences robust to mis-estimated / non-stationary PSDs.
+    """
     latent_names = list(latent_names)
     latent_sigma_arr = _normalise_latent_sigma(latent_sigma, latent_names)
     log_amp_sigma = float(log_amp_sigma)
+
+    dd_total = n_total = b_val = None
+    if noise_scale_marginal:
+        from .noise_evidence import band_quantities
+
+        qs = [band_quantities(det) for det in likelihood.detectors]
+        dd_total = float(sum(q.dd for q in qs))
+        n_total = int(sum(q.n_bins for q in qs))
+        b_val = float(nsm_a - 1.0) if nsm_b is None else float(nsm_b)
 
     def model():
         params = {}
@@ -98,6 +125,11 @@ def _build_numpyro_model(
         params["log_amp"] = numpyro.sample("log_amp", dist.Normal(0.0, log_amp_sigma))
         params.update(fixed_params)
         log_like = likelihood.evaluate(params, None)
+        if noise_scale_marginal:
+            resid = dd_total - 2.0 * log_like  # R(theta) = <d-h|d-h>
+            log_like = -(n_total + nsm_a) * (
+                jnp.log(resid / 2.0 + b_val) - jnp.log(dd_total / 2.0 + b_val)
+            )
         numpyro.factor("log_likelihood", log_like)
 
     return model, latent_sigma_arr, log_amp_sigma
@@ -117,10 +149,14 @@ def run_numpyro_sampling(
     dense_mass: bool = True,
     progress_bar: bool = True,
     init_strategy=None,
+    noise_scale_marginal: bool = False,
+    nsm_a: float = 100.0,
+    nsm_b: float | None = None,
 ) -> LikelihoodRunResult:
     """Run NumPyro NUTS sampling for the supplied likelihood."""
     model, latent_sigma_arr, log_amp_sigma_val = _build_numpyro_model(
-        likelihood, latent_names, latent_sigma, log_amp_sigma, fixed_params
+        likelihood, latent_names, latent_sigma, log_amp_sigma, fixed_params,
+        noise_scale_marginal=noise_scale_marginal, nsm_a=nsm_a, nsm_b=nsm_b,
     )
 
     strategy = init_strategy if init_strategy is not None else init_to_uniform()
@@ -178,10 +214,14 @@ def run_nested_sampling(
     max_samples: int = 2000,
     num_posterior_samples: int = 200,
     verbose: bool = True,
+    noise_scale_marginal: bool = False,
+    nsm_a: float = 100.0,
+    nsm_b: float | None = None,
 ) -> LikelihoodRunResult:
     """Run JIM nested sampling using the supplied likelihood."""
     model, _, _ = _build_numpyro_model(
-        likelihood, latent_names, latent_sigma, log_amp_sigma, fixed_params
+        likelihood, latent_names, latent_sigma, log_amp_sigma, fixed_params,
+        noise_scale_marginal=noise_scale_marginal, nsm_a=nsm_a, nsm_b=nsm_b,
     )
 
     ns = NestedSampler(

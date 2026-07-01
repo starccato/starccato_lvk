@@ -13,10 +13,10 @@ sampler:
 priors:
   signal:
     latent_sigma: 1.0
-    log_amp_sigma: 1.0
+    log_amp_sigma: 5.0
   glitch:
     latent_sigma: 1.0
-    log_amp_sigma: 1.0
+    log_amp_sigma: 5.0
 models:
   signal: ccsne
   glitch: blip
