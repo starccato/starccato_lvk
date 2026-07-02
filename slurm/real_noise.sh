@@ -32,7 +32,7 @@
 #SBATCH --job-name=starccato_rn
 #SBATCH --array=0-199
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=6G
+#SBATCH --mem=10G
 #SBATCH --time=03:00:00
 #SBATCH --output=slurm/logs/rn_%A_%a.out
 #SBATCH --error=slurm/logs/rn_%A_%a.err
