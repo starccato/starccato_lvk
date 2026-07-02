@@ -162,9 +162,19 @@ def _local_data_fetcher(detector: Optional[str] = None) -> DataFetcher:
         files_avail = [f for f in files if os.path.exists(f)]
         if len(files_avail) == 0:
             raise FileNotFoundError(
-                f"No local data files for {detector} GPS {gps_start}-{gps_end}. Checked: {files}"
+                f"No local data files for {detector} covering GPS {gps_start}-{gps_end} "
+                f"(likely a gap in the {detector} mirror). Checked: {files}"
             )
-        return TimeSeries.read(files_avail, format="hdf5.gwosc", start=gps_start, end=gps_end)
+        try:
+            ts = TimeSeries.read(files_avail, format="hdf5.gwosc", start=gps_start, end=gps_end)
+        except ValueError as err:
+            # gwpy raises when the found files do not fully span the request
+            # (a gap straddling a file boundary). Treat as "not available locally"
+            # so the caller can fall back to a remote fetch or skip cleanly.
+            raise FileNotFoundError(
+                f"Local {detector} files do not fully cover GPS {gps_start}-{gps_end}: {err}"
+            ) from err
+        return ts
 
     return fetch
 

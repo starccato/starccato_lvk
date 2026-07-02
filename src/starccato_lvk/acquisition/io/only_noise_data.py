@@ -121,7 +121,7 @@ def _generate_noise_segments_from_local_files(
         return np.empty((0, 2), dtype=int)
 
     segments = []
-    for gps_start, file_path in files_map.items():
+    for gps_start, (file_path, _dur) in files_map.items():
         try:
             valid = _get_valid_start_stops_for_one_file(
                 file_path,

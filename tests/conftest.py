@@ -27,8 +27,9 @@ def mock_data_dir():
 @pytest.fixture
 def mock_get_data_files_and_gps_times(monkeypatch):
     def fake_func(*args, **kwargs):
+        # {gps_start: (path, duration)} with contiguous 10 s files
         return {
-            i: f"file_{i}.hdf5" for i in range(100, 200, 10)
+            i: (f"file_{i}.hdf5", 10) for i in range(100, 200, 10)
         }
 
     monkeypatch.setattr('starccato_lvk.acquisition.io.utils._get_data_files_and_gps_times', fake_func)
