@@ -52,8 +52,16 @@ def prep_index(index, detectors, gdet, band, snr_grid, noise_offset, outdir) -> 
     blip_gps = get_blip_trigger_time(index)
     noise_gps = blip_gps - noise_offset
     cat_snr = float(cat.iloc[index]["snr"])
-    target = float(snr_grid[index % len(snr_grid)])
-    rng = np.random.default_rng(1000 + index)  # reproducible held-out waveform choice
+    rng = np.random.default_rng(1000 + index)  # reproducible per-event draws
+    # continuous injected SNR (log-uniform over the grid's span -> no discrete stripes)
+    lo, hi = float(min(snr_grid)), float(max(snr_grid))
+    target = float(np.exp(rng.uniform(np.log(lo), np.log(hi))))
+    # isotropic targeted sky (inject AND recover here -- known-direction analysis);
+    # sampling the sky is slow, non-converging under HMC, and lets glitches find
+    # blind-spot skies under nested -- so we fix a matched per-event direction.
+    sky = {"ra": float(rng.uniform(0.0, 2.0 * np.pi)),
+           "dec": float(np.arcsin(rng.uniform(-1.0, 1.0))),
+           "psi": float(rng.uniform(0.0, np.pi)), "t_c": 0.0}
 
     noise_b = {d: _build_bundle(noise_gps, edir / "noise" / d, detector=d) for d in detectors}
     real_g = {d: _build_bundle(blip_gps, edir / "realg" / d, detector=d) for d in detectors}
@@ -63,7 +71,7 @@ def prep_index(index, detectors, gdet, band, snr_grid, noise_offset, outdir) -> 
     blip_pool = np.asarray(TrainValData.load(source="blip", seed=0).val) if TrainValData else None
     ccsn_wf = ccsn_pool[rng.integers(ccsn_pool.shape[0])] if ccsn_pool is not None else None
     blip_wf = blip_pool[rng.integers(blip_pool.shape[0])] if blip_pool is not None else None
-    inj_c, net_snr = _inject_coherent(prep, target, n_seg, dt, flow, fmax, ccsn_wf)
+    inj_c, net_snr = _inject_coherent(prep, target, n_seg, dt, flow, fmax, ccsn_wf, sky=sky)
     inj_g, g_snr = _inject_single_glitch(prep, gdet, target, n_seg, dt, flow, fmax, blip_wf)
     ccsn_b = {d: _inject_into_bundle(noise_b[d], inj_c[d], edir / "ccsn" / f"{d}.hdf5") for d in detectors}
     glitch_b = dict(noise_b)
@@ -71,6 +79,7 @@ def prep_index(index, detectors, gdet, band, snr_grid, noise_offset, outdir) -> 
 
     manifest = {
         "index": index, "detectors": detectors, "glitch_det": gdet, "band": list(band),
+        "sky": sky,  # targeted direction: recover the signal model here for every class
         "snr": {"noise": 0.0, "inj_ccsn": float(net_snr), "inj_glitch": float(g_snr), "real_glitch": cat_snr},
         "bundles": {
             "noise": {d: str(noise_b[d]) for d in detectors},
@@ -98,6 +107,7 @@ def analyse_manifest(manifest, outdir, num_warmup, num_samples, nsm) -> None:
             r = run_bcr_posteriors(
                 detectors=detectors, outdir=str(outdir / f"e{index}" / cls),
                 bundle_paths=manifest["bundles"][cls],
+                extrinsic_params=manifest.get("sky"),  # recover signal model at targeted sky
                 signal_model="ccsne", glitch_model="blip", flow=flow, fmax=fmax,
                 num_warmup=num_warmup, num_samples=num_samples, save_artifacts=False,
                 lnz_method="morph", noise_scale_marginal=nsm,

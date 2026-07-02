@@ -80,6 +80,9 @@ def _normalise_latent_sigma(latent_sigma: float | Iterable[float], latent_names:
     return latent_sigma
 
 
+SKY_PARAM_NAMES = ("ra", "sin_dec", "psi", "t_c")
+
+
 def _build_numpyro_model(
     likelihood: TransientLikelihoodFD,
     latent_names,
@@ -89,6 +92,8 @@ def _build_numpyro_model(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: float | None = None,
+    sample_sky: bool = False,
+    t_c_sigma: float = 0.01,
 ):
     """Build the NumPyro model for the signal/glitch posterior.
 
@@ -124,6 +129,17 @@ def _build_numpyro_model(
             params[name] = numpyro.sample(name, dist.Normal(0.0, latent_sigma_arr[idx]))
         params["log_amp"] = numpyro.sample("log_amp", dist.Normal(0.0, log_amp_sigma))
         params.update(fixed_params)
+        if sample_sky:
+            # Isotropic sky + small time offset, sampled so the COHERENT signal must
+            # explain every detector jointly (an incoherent single-detector glitch
+            # cannot, regardless of the network geometry at the trigger time).
+            # Sample sky on the 2-sphere via ProjectedNormal to avoid the ra wrap
+            # boundary and the arcsin(dec) pole singularity that wreck NUTS.
+            u_sky = numpyro.sample("u_sky", dist.ProjectedNormal(jnp.zeros(3)))
+            params["ra"] = jnp.arctan2(u_sky[1], u_sky[0]) % (2.0 * jnp.pi)
+            params["dec"] = jnp.arcsin(u_sky[2])
+            params["psi"] = numpyro.sample("psi", dist.Uniform(0.0, jnp.pi))
+            params["t_c"] = numpyro.sample("t_c", dist.Normal(0.0, t_c_sigma))
         log_like = likelihood.evaluate(params, None)
         if noise_scale_marginal:
             resid = dd_total - 2.0 * log_like  # R(theta) = <d-h|d-h>
@@ -131,6 +147,11 @@ def _build_numpyro_model(
                 jnp.log(resid / 2.0 + b_val) - jnp.log(dd_total / 2.0 + b_val)
             )
         numpyro.factor("log_likelihood", log_like)
+
+    if sample_sky:
+        from numpyro.infer.reparam import ProjectedNormalReparam
+
+        model = numpyro.handlers.reparam(model, config={"u_sky": ProjectedNormalReparam()})
 
     return model, latent_sigma_arr, log_amp_sigma
 
@@ -152,11 +173,13 @@ def run_numpyro_sampling(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: float | None = None,
+    sample_sky: bool = False,
 ) -> LikelihoodRunResult:
     """Run NumPyro NUTS sampling for the supplied likelihood."""
     model, latent_sigma_arr, log_amp_sigma_val = _build_numpyro_model(
         likelihood, latent_names, latent_sigma, log_amp_sigma, fixed_params,
         noise_scale_marginal=noise_scale_marginal, nsm_a=nsm_a, nsm_b=nsm_b,
+        sample_sky=sample_sky,
     )
 
     strategy = init_strategy if init_strategy is not None else init_to_uniform()
@@ -169,7 +192,7 @@ def run_numpyro_sampling(
         progress_bar=progress_bar,
     )
     t0 = time.perf_counter()
-    mcmc.run(rng_key)
+    mcmc.run(rng_key, extra_fields=("diverging",))
     runtime = time.perf_counter() - t0
     samples = {name: np.asarray(value) for name, value in mcmc.get_samples().items()}
     samples_grouped = {
@@ -217,11 +240,13 @@ def run_nested_sampling(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: float | None = None,
+    sample_sky: bool = False,
 ) -> LikelihoodRunResult:
     """Run JIM nested sampling using the supplied likelihood."""
     model, _, _ = _build_numpyro_model(
         likelihood, latent_names, latent_sigma, log_amp_sigma, fixed_params,
         noise_scale_marginal=noise_scale_marginal, nsm_a=nsm_a, nsm_b=nsm_b,
+        sample_sky=sample_sky,
     )
 
     ns = NestedSampler(
