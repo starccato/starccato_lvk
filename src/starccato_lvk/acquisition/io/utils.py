@@ -5,19 +5,18 @@ from typing import Dict, Optional
 from starccato_lvk.acquisition import config
 
 
-def _get_data_files_and_gps_times(detector: Optional[str] = None) -> Dict[int, str]:
-    """Get a mapping of GPS times (start times) to HDF5 files.
+def _get_data_files_and_gps_times(detector: Optional[str] = None) -> Dict[int, tuple]:
+    """Get a mapping of GPS start times to (file path, duration) tuples.
+
+    The duration is parsed from the GWOSC filename (``R1-<start>-<duration>``)
+    so each file's true coverage ``[start, start + duration)`` is known. This
+    matters because the local mirror can have GAPS (missing chunks): coverage
+    must be bounded by the file's own length, not by the next file's start.
 
     Returns:
-        Dict[int, str]: A dictionary mapping GPS start times to HDF5 file paths.
-        {
-        100: "path/to/file.hdf5",
-        200: "path/to/another_file.hdf5",
-        ...
-        999: "path/to/yet_another_file.hdf5"
-        }
+        Dict[int, tuple]: ``{gps_start: (path, duration), ...}`` sorted by start.
     """
-    
+
     det = (detector or config.DEFAULT_DETECTOR).upper()
     base = config.DATA_DIRS.get(det, config.DATA_DIR)
     print(f"Looking for HDF5 files in {base} for detector {det}...")
@@ -25,28 +24,31 @@ def _get_data_files_and_gps_times(detector: Optional[str] = None) -> Dict[int, s
     files = glob.glob(search_str)
     if not files:
         raise FileNotFoundError(f"No HDF5 files found at {search_str}")
-    gps_starts = [int(re.search(r"R1-(\d+)-\d+\.hdf5", p).group(1)) for p in files]
-    path_dict = {gps: f for gps, f in zip(gps_starts, files)}
-    path_dict = dict(sorted(path_dict.items()))
-    return path_dict
+    path_dict = {}
+    for p in files:
+        m = re.search(r"R1-(\d+)-(\d+)\.hdf5", p)
+        if m is None:
+            continue
+        path_dict[int(m.group(1))] = (p, int(m.group(2)))
+    return dict(sorted(path_dict.items()))
 
 
-def _get_fnames_for_range(gps_start: float, gps_end: float, detector: Optional[str] = None) -> (str, str):
-    """Get the filenames for the start and end GPS times."""
+def _get_fnames_for_range(gps_start: float, gps_end: float, detector: Optional[str] = None) -> list:
+    """Return local files whose true coverage intersects ``[gps_start, gps_end)``.
+
+    Each file covers ``[start, start + duration)``; gaps in the mirror yield no
+    file (rather than the previous file being wrongly returned), so a caller
+    reading the result gets exactly the covering files or an empty list.
+    """
     gps_start = int(gps_start)
     gps_end = int(gps_end)
 
     gps_files = _get_data_files_and_gps_times(detector)
-    start_times = sorted(gps_files.keys())
 
     files = []
-
-    for i in range(len(start_times)):
-        t0 = start_times[i]
-        t1 = start_times[i + 1] if i + 1 < len(start_times) else float('inf')
-
-        # Does [gps_start, gps_end] intersect with [interval_start, interval_end]?
+    for t0, (path, dur) in gps_files.items():
+        t1 = t0 + dur  # true end of this file's coverage
         if gps_end > t0 and gps_start < t1:
-            files.append(gps_files[t0])
+            files.append(path)
 
     return files
