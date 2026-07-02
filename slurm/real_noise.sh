@@ -27,7 +27,7 @@
 #SBATCH --output=slurm/logs/rn_%A_%a.out
 #SBATCH --error=slurm/logs/rn_%A_%a.err
 
-VENV=/fred/oz303/avajpeyi/venvs/jax_cpu_venv/
+VENV=/fred/oz303/avajpeyi/codes/starccato_lvk/.venv
 INDEX=${SLURM_ARRAY_TASK_ID:-0}
 STAGE=${STAGE:-both}
 DETECTORS=${DETECTORS:-L1}
@@ -36,7 +36,8 @@ DETTAG=$(echo "${DETECTORS}" | tr ' ' '_')
 OUTDIR=slurm/out/rn_${DETTAG}
 
 export OMP_NUM_THREADS=1
-module --force purge && ml gcc/12.3.0 python/3.11.3 && source ${VENV}/bin/activate || true
+module load gcc/12.3.0 python/3.11.3
+source ${VENV}/bin/activate
 
 # data-mover nodes lack a GPU/heavy compute; compute nodes may lack internet -> split stages.
 srun ${VENV}/bin/python studies/real_noise_event.py \
