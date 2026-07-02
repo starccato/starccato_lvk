@@ -70,15 +70,21 @@ def _snr(hdec: np.ndarray, psd_full: np.ndarray, band: np.ndarray, df: float) ->
 
 
 def _inject_coherent(prep, target_net_snr: float, n_seg: int, dt: float,
-                     flow: float, fmax: float, raw_wf) -> tuple[Dict[str, np.ndarray], float]:
-    """Inject ONE CCSN coherently across all detectors, scaled to a network SNR."""
+                     flow: float, fmax: float, raw_wf,
+                     sky: Optional[dict] = None) -> tuple[Dict[str, np.ndarray], float]:
+    """Inject ONE CCSN coherently across all detectors, scaled to a network SNR.
+
+    ``sky`` gives the source direction (ra/dec/psi/t_c); default is the network
+    zenith (0,0,0). For a realistic targeted study pass an isotropic draw and
+    recover at the SAME sky (extrinsic_params) -- see studies/real_noise_event.py.
+    """
     full_freqs = np.fft.rfftfreq(n_seg, d=dt)
     fj = jnp.asarray(full_freqs)
     df = float(full_freqs[1] - full_freqs[0])
     band = (full_freqs >= flow) & (full_freqs <= fmax)
     h_sky = _build_h_sky_unit(prep, "ccsne", n_seg, dt, raw_wf)
-    sky = {"t_c": 0.0, "ra": 0.0, "dec": 0.0, "psi": 0.0,
-           "gmst": float(prep.gmst), "trigger_time": float(prep.trigger_time)}
+    sky = {"t_c": 0.0, "ra": 0.0, "dec": 0.0, "psi": 0.0, **(sky or {})}
+    sky.update(gmst=float(prep.gmst), trigger_time=float(prep.trigger_time))
 
     unit_hdec, net_sq = {}, 0.0
     for det in prep.detectors:
