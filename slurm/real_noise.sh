@@ -13,8 +13,18 @@
 # Then launch the arrays (no dependency needed -- strain is local):
 #   sbatch --export=DETECTORS="L1"     slurm/real_noise.sh          # 1-detector
 #   sbatch --export=DETECTORS="H1 L1"  slurm/real_noise.sh          # 2-detector
-#   # aggregate when done:
+#
+# The runner is IDEMPOTENT: each class writes results/e{i}_{cls}.json and is
+# skipped if it already exists. So re-submitting the SAME indices does no new
+# work (it only backfills classes that previously FAILED). To grow the sample,
+# point the array at a FRESH index range (overrides the #SBATCH --array below):
+#   sbatch --array=200-599 --export=DETECTORS="L1"    slurm/real_noise.sh   # new events
+#   sbatch --array=0-199   --export=DETECTORS="H1 L1" slurm/real_noise.sh   # backfill failures
+# The blip catalogue has ~1178 rows, so indices up to ~1177 are valid.
+#
+#   # aggregate + plot when done:
 #   python studies/real_noise_aggregate.py --outdir slurm/out/rn_L1
+#   python studies/real_noise_plots.py     --l1 slurm/out/rn_L1 --h1l1 slurm/out/rn_H1_L1
 #
 # (If run on a system WITHOUT the local mirror, each task falls back to a GWOSC
 #  download, so use STAGE=prep on a data-mover node then STAGE=analysis on compute.)
