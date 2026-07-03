@@ -32,6 +32,24 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 from snr_vs_odds_roc import _roc_auc
+from real_noise_aggregate import _boot_auc_err
+
+# Publication style: figures are included at \textwidth (figure*) in the
+# two-column AASTeX manuscript, so size fonts for a ~7 in wide figure.
+plt.rcParams.update({
+    "font.family": "serif",
+    "mathtext.fontset": "dejavuserif",
+    "font.size": 9,
+    "axes.labelsize": 9,
+    "axes.titlesize": 9.5,
+    "legend.fontsize": 8,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "axes.linewidth": 0.8,
+    "lines.linewidth": 1.4,
+    "savefig.dpi": 300,
+})
+PANEL_W, PANEL_H = 3.5, 2.9
 
 CLASSES = ("noise", "inj_ccsn", "inj_glitch", "real_glitch")
 BACKGROUND = ("noise", "inj_glitch", "real_glitch")
@@ -66,16 +84,22 @@ def load_run(outdir: Path) -> Optional[Dict[str, dict]]:
     return out
 
 
-def _roc_curve(pos: np.ndarray, neg: np.ndarray, n: int = 200):
-    """Return (fpr, tpr) sweeping a threshold over the combined score range."""
+def _roc_curve(pos: np.ndarray, neg: np.ndarray):
+    """Exact ROC step curve: one vertex per distinct score, no threshold grid.
+
+    The previous linspace-threshold version placed most of its 200 thresholds
+    in the empty tails of the +-600 log-odds range, producing a kinked polyline.
+    """
     pos = pos[np.isfinite(pos)]
     neg = neg[np.isfinite(neg)]
-    lo = float(min(pos.min(), neg.min()))
-    hi = float(max(pos.max(), neg.max()))
-    thr = np.linspace(hi, lo, n)
-    tpr = np.array([(pos >= t).mean() for t in thr])
-    fpr = np.array([(neg >= t).mean() for t in thr])
-    return fpr, tpr
+    scores = np.concatenate([pos, neg])
+    is_pos = np.concatenate([np.ones(pos.size, bool), np.zeros(neg.size, bool)])
+    order = np.argsort(-scores, kind="stable")
+    scores, is_pos = scores[order], is_pos[order]
+    tpr = np.cumsum(is_pos) / pos.size
+    fpr = np.cumsum(~is_pos) / neg.size
+    distinct = np.r_[np.diff(scores) != 0, True]  # collapse tied scores
+    return np.r_[0.0, fpr[distinct]], np.r_[0.0, tpr[distinct]]
 
 
 def _background(run: dict, key: str) -> np.ndarray:
@@ -83,31 +107,37 @@ def _background(run: dict, key: str) -> np.ndarray:
 
 
 def fig_roc(runs: Dict[str, dict], out: Path) -> None:
-    fig, axes = plt.subplots(1, len(runs), figsize=(5.2 * len(runs), 4.6), squeeze=False)
+    """ROC on a log false-alarm-probability axis (the low-FAP regime is what a
+    search operates in; linear axes hide it)."""
+    fig, axes = plt.subplots(1, len(runs), figsize=(PANEL_W * len(runs), PANEL_H), squeeze=False)
     for ax, (net, run) in zip(axes[0], runs.items()):
         sig_o, sig_s = run["inj_ccsn"]["log_odds"], run["inj_ccsn"]["snr"]
         bg_o, bg_s = _background(run, "log_odds"), _background(run, "snr")
-        for score, sig, bg, color, name in (
-            ("odds", sig_o, bg_o, "#1b7837", r"$\ln\,\mathcal{O}$"),
-            ("snr", sig_s, bg_s, "#762a83", "SNR"),
+        fap_min = 1.0 / bg_o[np.isfinite(bg_o)].size  # resolution of the background set
+        for sig, bg, color, name in (
+            (sig_o, bg_o, "#1b7837", r"$\ln\,\mathcal{O}$"),
+            (sig_s, bg_s, "#762a83", "SNR"),
         ):
             fpr, tpr = _roc_curve(sig, bg)
-            auc = _roc_auc(sig, bg)
-            ax.plot(fpr, tpr, lw=2.2, color=color, label=f"{name}  (AUC={auc:.3f})")
-        ax.plot([0, 1], [0, 1], ls=":", color="k", lw=1, alpha=0.6)
-        ax.set_xlabel("false-alarm rate (signal vs. background)")
+            auc, err = _roc_auc(sig, bg), _boot_auc_err(sig, bg)
+            ax.plot(np.clip(fpr, fap_min, None), tpr, drawstyle="steps-post", color=color,
+                    label=rf"{name}  (AUC $= {auc:.3f} \pm {err:.3f}$)")
+        diag = np.geomspace(fap_min, 1.0, 50)
+        ax.plot(diag, diag, ls=":", color="k", lw=0.8, alpha=0.6)
+        ax.set_xscale("log")
+        ax.set_xlabel("false-alarm probability")
         ax.set_ylabel("detection efficiency")
-        ax.set_title(f"{net} network")
-        ax.set_xlim(0, 1)
+        ax.set_title(net)
+        ax.set_xlim(fap_min, 1)
         ax.set_ylim(0, 1.02)
-        ax.legend(loc="lower right", frameon=False)
+        ax.legend(loc="upper left", frameon=False)
     fig.tight_layout()
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
 
 
 def fig_score_dist(runs: Dict[str, dict], out: Path) -> None:
-    fig, axes = plt.subplots(1, len(runs), figsize=(5.6 * len(runs), 4.4), squeeze=False)
+    fig, axes = plt.subplots(1, len(runs), figsize=(PANEL_W * len(runs), PANEL_H), squeeze=False)
     for ax, (net, run) in zip(axes[0], runs.items()):
         allvals = np.concatenate([run[c]["log_odds"][np.isfinite(run[c]["log_odds"])] for c in CLASSES])
         lo, hi = np.percentile(allvals, [1, 99])
@@ -128,26 +158,39 @@ def fig_score_dist(runs: Dict[str, dict], out: Path) -> None:
 
 
 def fig_odds_vs_snr(runs: Dict[str, dict], out: Path) -> None:
-    fig, axes = plt.subplots(1, len(runs), figsize=(5.4 * len(runs), 4.6), squeeze=False)
-    for ax, (net, run) in zip(axes[0], runs.items()):
+    """Symlog y-axis: the decision-relevant structure lives at |ln O| ~ 10,
+    which a linear +-600 axis squashes into the ln O = 0 line."""
+    fig, axes = plt.subplots(1, len(runs), figsize=(PANEL_W * len(runs), PANEL_H), squeeze=False)
+    for i, (ax, (net, run)) in enumerate(zip(axes[0], runs.items())):
         for c in CLASSES:
             snr, odds = run[c]["snr"], run[c]["log_odds"]
             m = np.isfinite(snr) & np.isfinite(odds)
-            ax.scatter(snr[m], odds[m], s=14, alpha=0.5, color=COLORS[c],
-                       edgecolors="none", label=LABELS[c])
-        ax.axhline(0, color="k", ls="--", lw=1, alpha=0.7)
+            ax.scatter(snr[m], odds[m], s=7, alpha=0.55, color=COLORS[c],
+                       edgecolors="none", rasterized=True, label=LABELS[c])
+        ax.axhline(0, color="k", ls="--", lw=0.8, alpha=0.7)
+        ax.set_yscale("symlog", linthresh=10)
         ax.set_xlabel("matched-filter SNR")
         ax.set_ylabel(r"$\ln\,\mathcal{O}$")
-        ax.set_title(f"{net} network")
-        ax.legend(frameon=False, fontsize=9, loc="best")
+        ax.set_title(net)
+        if i == 0:
+            ax.legend(frameon=False, loc="upper right", markerscale=1.6, handletextpad=0.1)
     fig.tight_layout()
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
 
 
+def _wilson(k: int, n: int, z: float = 1.0):
+    """Wilson score interval for a binomial proportion (sane at eff = 0 or 1)."""
+    p = k / n
+    denom = 1.0 + z**2 / n
+    center = (p + z**2 / (2 * n)) / denom
+    half = z * np.sqrt(p * (1 - p) / n + z**2 / (4 * n**2)) / denom
+    return center - half, center + half
+
+
 def fig_efficiency(runs: Dict[str, dict], out: Path, far: float = 0.05) -> None:
     """Detection efficiency vs injected SNR at fixed false-alarm rate `far`."""
-    fig, axes = plt.subplots(1, len(runs), figsize=(5.2 * len(runs), 4.4), squeeze=False)
+    fig, axes = plt.subplots(1, len(runs), figsize=(PANEL_W * len(runs), PANEL_H), squeeze=False)
     edges = np.array([0, 8, 12, 16, 24, 32, 48, 100], dtype=float)
     centers = 0.5 * (edges[:-1] + edges[1:])
     for ax, (net, run) in zip(axes[0], runs.items()):
@@ -158,18 +201,24 @@ def fig_efficiency(runs: Dict[str, dict], out: Path, far: float = 0.05) -> None:
             thr = np.quantile(bg, 1.0 - far)  # threshold giving the target FAR
             sig_snr = run["inj_ccsn"]["snr"]
             sig_val = run["inj_ccsn"][score]
-            eff, xs = [], []
+            eff, lo, hi, xs = [], [], [], []
             for i in range(len(edges) - 1):
                 m = (sig_snr >= edges[i]) & (sig_snr < edges[i + 1]) & np.isfinite(sig_val)
                 if m.sum() >= 3:
-                    eff.append((sig_val[m] >= thr).mean())
+                    k, n = int((sig_val[m] >= thr).sum()), int(m.sum())
+                    eff.append(k / n)
+                    l, h = _wilson(k, n)
+                    lo.append(l)
+                    hi.append(h)
                     xs.append(centers[i])
-            ax.plot(xs, eff, "-o", lw=2, color=color, label=name)
-        ax.set_xlabel("injected SNR")
-        ax.set_ylabel(f"efficiency @ FAR={far:.0%}")
-        ax.set_title(f"{net} network")
-        ax.set_ylim(0, 1.02)
-        ax.legend(frameon=False)
+            eff, lo, hi = np.array(eff), np.array(lo), np.array(hi)
+            ax.errorbar(xs, eff, yerr=[eff - lo, hi - eff], fmt="-o", ms=3.5,
+                        capsize=2, color=color, label=name)
+        ax.set_xlabel("injected network SNR")
+        ax.set_ylabel(f"efficiency at {far:.0%} false-alarm probability")
+        ax.set_title(net)
+        ax.set_ylim(-0.02, 1.02)
+        ax.legend(frameon=False, loc="center right")
     fig.tight_layout()
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
@@ -186,14 +235,22 @@ def write_table(runs: Dict[str, dict], out: Path) -> None:
     def row(name, fn, fmt="{:.3f}"):
         return f"{name} & " + " & ".join(fmt.format(fn(r)) for r in runs.values()) + r" \\"
 
+    def auc_row(name, fg_key, bg_fn):
+        r"""AUC row with a bootstrap standard error: 0.975 \pm 0.004."""
+        def cell(r):
+            fg, bg = r["inj_ccsn"][fg_key], bg_fn(r)
+            return f"${_roc_auc(fg, bg):.3f} \\pm {_boot_auc_err(fg, bg):.3f}$"
+
+        return f"{name} & " + " & ".join(cell(r) for r in runs.values()) + r" \\"
+
     lines += [
         row("$N$ events", lambda r: r["_n"], "{:d}"),
-        row(r"AUC$_{\ln\mathcal{O}}$ (sig vs.\ bkg)",
-            lambda r: _roc_auc(r["inj_ccsn"]["log_odds"], _background(r, "log_odds"))),
-        row("AUC$_{\\rm SNR}$ (sig vs.\\ bkg)",
-            lambda r: _roc_auc(r["inj_ccsn"]["snr"], _background(r, "snr"))),
-        row(r"AUC$_{\ln\mathcal{O}}$ (sig vs.\ real glitch)",
-            lambda r: _roc_auc(r["inj_ccsn"]["log_odds"], r["real_glitch"]["log_odds"])),
+        auc_row(r"AUC$_{\ln\mathcal{O}}$ (sig vs.\ bkg)",
+                "log_odds", lambda r: _background(r, "log_odds")),
+        auc_row("AUC$_{\\rm SNR}$ (sig vs.\\ bkg)",
+                "snr", lambda r: _background(r, "snr")),
+        auc_row(r"AUC$_{\ln\mathcal{O}}$ (sig vs.\ real glitch)",
+                "log_odds", lambda r: r["real_glitch"]["log_odds"]),
         row("real glitch misclass.\\ rate",
             lambda r: (r["real_glitch"]["log_odds"] > 0).mean()),
         row("signal missed rate",

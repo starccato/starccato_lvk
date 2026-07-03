@@ -17,6 +17,14 @@ from snr_vs_odds_roc import _roc_auc
 CLASSES = ("noise", "inj_ccsn", "inj_glitch", "real_glitch")
 
 
+def _boot_auc_err(fg: np.ndarray, bg: np.ndarray, n_boot: int = 1000, seed: int = 0) -> float:
+    """Bootstrap standard error of the ROC AUC (resample both classes with replacement)."""
+    rng = np.random.default_rng(seed)
+    aucs = [_roc_auc(rng.choice(fg, fg.size, replace=True), rng.choice(bg, bg.size, replace=True))
+            for _ in range(n_boot)]
+    return float(np.std(aucs))
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--outdir", type=Path, default=Path("out_rn"))
@@ -35,9 +43,13 @@ def main() -> None:
         "n_events": len(rows),
         "n": {c: int(odds[c].size) for c in CLASSES},
         "auc_odds_signal_vs_background": _roc_auc(odds["inj_ccsn"], bg),
+        "auc_odds_signal_vs_background_err": _boot_auc_err(odds["inj_ccsn"], bg),
         "auc_snr_signal_vs_background": _roc_auc(snr["inj_ccsn"], bg_snr),
+        "auc_snr_signal_vs_background_err": _boot_auc_err(snr["inj_ccsn"], bg_snr),
         "auc_odds_signal_vs_real_glitch": _roc_auc(odds["inj_ccsn"], odds["real_glitch"]),
+        "auc_odds_signal_vs_real_glitch_err": _boot_auc_err(odds["inj_ccsn"], odds["real_glitch"]),
         "auc_odds_signal_vs_inj_glitch": _roc_auc(odds["inj_ccsn"], odds["inj_glitch"]),
+        "auc_odds_signal_vs_inj_glitch_err": _boot_auc_err(odds["inj_ccsn"], odds["inj_glitch"]),
         "median_logBCR": {c: float(np.median(odds[c])) if odds[c].size else None for c in CLASSES},
         "real_glitch_misclassified": int(np.sum(odds["real_glitch"] > 0)),
         "inj_glitch_misclassified": int(np.sum(odds["inj_glitch"] > 0)),
