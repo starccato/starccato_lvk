@@ -8,6 +8,8 @@ test_outdir
 # C extensions
 *.so
 *.txt
+!design_psd_cache/
+!design_psd_cache/*.txt
 *.npy
 
 *.out

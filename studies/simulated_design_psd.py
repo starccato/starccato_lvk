@@ -57,11 +57,27 @@ BASE_TRIGGER = 1_260_000_000.0
 def download_asd(det: str, cache_dir: Path) -> Path:
     cache_dir.mkdir(parents=True, exist_ok=True)
     url = ASD_URLS[det]
-    dest = cache_dir / Path(url).name
-    if dest.exists():
-        return dest
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
+    filename = Path(url).name
+    dest = cache_dir / filename
+
+    # Support offline/HPC execution where cwd may differ from repo root.
+    fallback_cache = Path(__file__).resolve().parents[1] / "design_psd_cache"
+    for candidate in (dest, fallback_cache / filename):
+        if candidate.exists():
+            if candidate != dest:
+                dest.write_bytes(candidate.read_bytes())
+            return dest
+
+    try:
+        resp = requests.get(url, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException as exc:
+        searched = [str(dest), str(fallback_cache / filename)]
+        raise RuntimeError(
+            "Could not fetch design ASD and no local cache file was found. "
+            f"Detector={det}, searched={searched}, url={url}"
+        ) from exc
+
     dest.write_bytes(resp.content)
     return dest
 
