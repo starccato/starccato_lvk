@@ -9,6 +9,10 @@ test_outdir
 *.so
 *.txt
 *.npy
+
+*.out
+*.err
+
 # Distribution / packaging
 .Python
 outdir
