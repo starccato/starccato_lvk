@@ -1,0 +1,22 @@
+{
+  "n_events": 1911,
+  "n": {
+    "noise": 478,
+    "inj_ccsn": 478,
+    "inj_glitch": 478,
+    "real_glitch": 477
+  },
+  "auc_odds_signal_vs_background": 0.9595079521266501,
+  "auc_snr_signal_vs_background": 0.5544020648958938,
+  "auc_odds_signal_vs_real_glitch": 0.9617510065524592,
+  "auc_odds_signal_vs_inj_glitch": 0.9795828154269008,
+  "median_logBCR": {
+    "noise": -0.5850646997450946,
+    "inj_ccsn": 49.91643378754017,
+    "inj_glitch": -47.681439030319524,
+    "real_glitch": -29.8712292221651
+  },
+  "real_glitch_misclassified": 22,
+  "inj_glitch_misclassified": 2,
+  "signal_missed": 64
+}

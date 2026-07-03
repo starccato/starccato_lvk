@@ -12,3 +12,4 @@ sbatch --export=DETECTORS="H1 L1" slurm/real_noise.sh      # 2-detector
 3. aggregate:
 python studies/real_noise_aggregate.py --outdir slurm/out/rn_L1
 python studies/real_noise_aggregate.py --outdir slurm/out/rn_H1_L1
+python studies/real_noise_plots.py --l1 slurm/out/rn_L1 --h1l1 slurm/out/rn_H1_L1
