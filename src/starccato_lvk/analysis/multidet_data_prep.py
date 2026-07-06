@@ -10,6 +10,7 @@ import types
 import jax.numpy as jnp
 import numpy as np
 from astropy.time import Time
+from astropy.utils import iers
 from gwpy.frequencyseries import FrequencySeries
 from gwpy.timeseries import TimeSeries
 from ..jimgw.core.single_event import detector as jim_detector
@@ -20,6 +21,12 @@ from ..acquisition.io.strain_loader import (
     load_analysis_bundle,
     load_analysis_chunk_and_psd,
 )
+
+# HPC compute nodes (e.g. OzSTAR) have no internet access; astropy's default
+# IERS_Auto policy tries to download the latest UT1-UTC table on first use of
+# Time.sidereal_time, which hangs/fails offline. Fall back to the IERS table
+# bundled with astropy -- ample precision for antenna-pattern gmst.
+iers.conf.auto_download = False
 
 
 class InterferometerData(jim_data.Data):
