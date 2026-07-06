@@ -20,7 +20,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 export OMP_NUM_THREADS=1
-export STARCCATO_PSD_CACHE="${REPO_ROOT}/design_psd_cache"
+export STARCCATO_PSD_CACHE="${REPO_ROOT}/studies/design_psd_cache"
 module load gcc/12.3.0 python/3.11.3
 source ${VENV}/bin/activate
 
