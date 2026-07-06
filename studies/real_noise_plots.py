@@ -69,8 +69,12 @@ COLORS = {
 
 def load_run(outdir: Path) -> Optional[Dict[str, dict]]:
     """Load per-event rows keyed by class -> arrays. Returns None if empty."""
-    files = glob.glob(str(outdir / "results" / "e*_*.json"))
-    rows = [json.loads(Path(f).read_text()) for f in files]
+    combined = outdir / "results.json"  # written by collect_results.py
+    if combined.exists():
+        rows = json.loads(combined.read_text())
+    else:
+        files = glob.glob(str(outdir / "results" / "e*_*.json"))
+        rows = [json.loads(Path(f).read_text()) for f in files]
     if not rows:
         return None
     out = {}

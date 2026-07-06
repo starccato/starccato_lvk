@@ -28,4 +28,4 @@ srun ${VENV}/bin/python studies/pp_test.py \
   --index ${INDEX} \
   --outdir slurm/out/pp \
   --snr-ref 20 \
-  --num-warmup 500 --num-samples 1000
+  --num-warmup 500 --num-samples 1000 --num-chains 4
