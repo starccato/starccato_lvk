@@ -49,16 +49,35 @@ PSD_CACHE = Path(os.environ.get("STARCCATO_PSD_CACHE", DEFAULT_PSD_CACHE))
 
 
 def _design_psd(n_seg: int, dt: float):
-    """Design-PSD values on the analysis rfft grid + FrequencySeries for bundles."""
-    psd_pycbc = build_design_psd("L1", 1.0 / (n_seg * dt), n_seg // 2 + 1, PSD_CACHE)
-    return np.asarray(psd_pycbc.numpy(), dtype=np.float64), pycbc_psd_to_gwpy(psd_pycbc)
+    """LINE-FREE design-PSD values on the analysis rfft grid + FrequencySeries.
+
+    Narrow spectral lines (violin modes) are capped at the local running-median
+    floor. The noise is drawn per-bin from this PSD, but the analysis windows the
+    segment, and window leakage from a design-PSD line contaminates hundreds of
+    neighbouring bins -- far beyond the +-3-bin line notch -- leaving kept bins
+    with up to ~100x the power the PSD claims (whitened band power ~23 instead
+    of 1). That noise/PSD mismatch is what a P-P test detects. A line-free PSD
+    sidesteps it: this test validates the inference machinery, not line handling.
+    """
+    from scipy.ndimage import median_filter
+    from pycbc.types import FrequencySeries as PycbcFrequencySeries
+
+    delta_f = 1.0 / (n_seg * dt)
+    psd_pycbc = build_design_psd("L1", delta_f, n_seg // 2 + 1, PSD_CACHE)
+    vals = np.asarray(psd_pycbc.numpy(), dtype=np.float64)
+    k = 2 * int(round(4.0 / delta_f)) + 1  # ~8 Hz median window
+    vals = np.minimum(vals, median_filter(vals, size=k, mode="nearest"))
+    smooth = PycbcFrequencySeries(vals, delta_f=delta_f)
+    return vals, pycbc_psd_to_gwpy(smooth)
 
 
 def run_injection(index: int, outdir: Path, *, snr_ref: float, flow: float, fmax: float,
-                  num_warmup: int, num_samples: int) -> dict:
+                  num_warmup: int, num_samples: int, num_chains: int = 4) -> dict:
     dt = 1.0 / SAMPLE_RATE
     n_seg = int(round(4.0 * SAMPLE_RATE))
-    rng = np.random.default_rng(5000 + index)
+    # truth seed must differ from the noise seed (5000+index): default_rng streams
+    # with the same seed are identical, so truth draws would replicate noise bins.
+    rng = np.random.default_rng(900_000 + index)
 
     psd_vals, psd_fs = _design_psd(n_seg, dt)
     noise = simulate_noise_fd(psd_vals, n_seg, dt, seed=5000 + index)
@@ -112,7 +131,8 @@ def run_injection(index: int, outdir: Path, *, snr_ref: float, flow: float, fmax
         fixed_params={k: resp[k] for k in ("t_c", "ra", "dec", "psi", "luminosity_distance",
                                            "gmst", "trigger_time")},
         rng_key=jax.random.PRNGKey(index), latent_sigma=1.0, log_amp_sigma=1.0,
-        num_warmup=num_warmup, num_samples=num_samples, progress_bar=False,
+        num_warmup=num_warmup, num_samples=num_samples, num_chains=num_chains,
+        progress_bar=False,
     )
 
     cred = {name: float(np.mean(result.samples[name] < truth[name]))
@@ -174,6 +194,10 @@ def main() -> None:
     p.add_argument("--fmax", type=float, default=800.0)
     p.add_argument("--num-warmup", type=int, default=500)
     p.add_argument("--num-samples", type=int, default=1000)
+    # the z-posterior is multimodal (VAE decoder); a single NUTS chain mode-captures
+    # (credible levels rail to 0/1 seed-dependently), failing the P-P test. Pooling
+    # independently-initialised chains restores (approximate) mode coverage.
+    p.add_argument("--num-chains", type=int, default=4)
     p.add_argument("--plot-only", action="store_true")
     args = p.parse_args()
     args.outdir.mkdir(parents=True, exist_ok=True)
@@ -186,7 +210,7 @@ def main() -> None:
                 continue  # idempotent, like the real-noise runner
             row = run_injection(i, args.outdir, snr_ref=args.snr_ref, flow=args.flow,
                                 fmax=args.fmax, num_warmup=args.num_warmup,
-                                num_samples=args.num_samples)
+                                num_samples=args.num_samples, num_chains=args.num_chains)
             print(f"[pp {i}] cred={ {k: round(v, 2) for k, v in row['credible_levels'].items()} }")
 
     rows = [json.loads(f.read_text()) for f in sorted((args.outdir / "results").glob("inj_*.json"))]

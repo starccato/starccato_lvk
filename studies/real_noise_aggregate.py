@@ -30,7 +30,11 @@ def main() -> None:
     p.add_argument("--outdir", type=Path, default=Path("out_rn"))
     args = p.parse_args()
 
-    rows = [json.loads(Path(f).read_text()) for f in glob.glob(str(args.outdir / "results" / "e*_*.json"))]
+    combined = args.outdir / "results.json"  # written by collect_results.py
+    if combined.exists():
+        rows = json.loads(combined.read_text())
+    else:
+        rows = [json.loads(Path(f).read_text()) for f in glob.glob(str(args.outdir / "results" / "e*_*.json"))]
     if not rows:
         print(f"No result JSONs under {args.outdir/'results'}.")
         return
