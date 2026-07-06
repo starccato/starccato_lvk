@@ -44,7 +44,8 @@ from snr_vs_odds_roc import (
 from simulated_design_psd import build_design_psd, pycbc_psd_to_gwpy
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-PSD_CACHE = Path(os.environ.get("STARCCATO_PSD_CACHE", REPO_ROOT / "design_psd_cache"))
+DEFAULT_PSD_CACHE = REPO_ROOT / "studies" / "design_psd_cache"
+PSD_CACHE = Path(os.environ.get("STARCCATO_PSD_CACHE", DEFAULT_PSD_CACHE))
 
 
 def _design_psd(n_seg: int, dt: float):

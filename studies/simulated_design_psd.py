@@ -55,30 +55,62 @@ BASE_TRIGGER = 1_260_000_000.0
 
 
 def download_asd(det: str, cache_dir: Path) -> Path:
-    cache_dir.mkdir(parents=True, exist_ok=True)
     url = ASD_URLS[det]
     filename = Path(url).name
-    dest = cache_dir / filename
+    requested_dest = cache_dir / filename
 
     # Support offline/HPC execution where cwd may differ from repo root.
-    fallback_cache = Path(__file__).resolve().parents[1] / "design_psd_cache"
-    for candidate in (dest, fallback_cache / filename):
-        if candidate.exists():
-            if candidate != dest:
-                dest.write_bytes(candidate.read_bytes())
-            return dest
+    repo_root = Path(__file__).resolve().parents[1]
+    fallback_cache = repo_root / "studies" / "design_psd_cache"
+    local_candidates = (
+        requested_dest,
+        fallback_cache / filename,
+    )
+    for candidate in local_candidates:
+        try:
+            exists = candidate.exists()
+        except OSError:
+            exists = False
+        if exists:
+            return candidate
+
+    dest = None
+    mkdir_errors = []
+    for cache_root in (cache_dir, fallback_cache):
+        try:
+            cache_root.mkdir(parents=True, exist_ok=True)
+            dest = cache_root / filename
+            break
+        except OSError as exc:
+            mkdir_errors.append(f"{cache_root}: {exc}")
+
+    if dest is None:
+        raise RuntimeError(
+            "No writable PSD cache directory available. "
+            f"Tried: {[str(cache_dir), str(fallback_cache)]}. "
+            f"Errors: {mkdir_errors}"
+        )
 
     try:
         resp = requests.get(url, timeout=30)
         resp.raise_for_status()
     except requests.RequestException as exc:
-        searched = [str(dest), str(fallback_cache / filename)]
+        searched = [
+            str(requested_dest),
+            str(fallback_cache / filename),
+        ]
         raise RuntimeError(
             "Could not fetch design ASD and no local cache file was found. "
             f"Detector={det}, searched={searched}, url={url}"
         ) from exc
 
-    dest.write_bytes(resp.content)
+    try:
+        dest.write_bytes(resp.content)
+    except OSError as exc:
+        raise RuntimeError(
+            "Downloaded ASD but failed to write cache file. "
+            f"Destination={dest}"
+        ) from exc
     return dest
 
 
