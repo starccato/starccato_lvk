@@ -12,6 +12,8 @@ test_outdir
 !design_psd_cache/*.txt
 *.npy
 
+out
+
 *.out
 *.err
 
