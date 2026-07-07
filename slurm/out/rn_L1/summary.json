@@ -1,22 +1,26 @@
 {
-  "n_events": 1635,
+  "n_events": 3163,
   "n": {
-    "noise": 477,
-    "inj_ccsn": 438,
-    "inj_glitch": 386,
-    "real_glitch": 334
+    "noise": 859,
+    "inj_ccsn": 820,
+    "inj_glitch": 768,
+    "real_glitch": 716
   },
-  "auc_odds_signal_vs_background": 0.9747160900729754,
-  "auc_snr_signal_vs_background": 0.5856698443216107,
-  "auc_odds_signal_vs_real_glitch": 0.9513028737046455,
-  "auc_odds_signal_vs_inj_glitch": 0.9936238673196583,
+  "auc_odds_signal_vs_background": 0.9753276495633074,
+  "auc_odds_signal_vs_background_err": 0.002883225901375747,
+  "auc_snr_signal_vs_background": 0.637518607580442,
+  "auc_snr_signal_vs_background_err": 0.00959994776548057,
+  "auc_odds_signal_vs_real_glitch": 0.957966003542717,
+  "auc_odds_signal_vs_real_glitch_err": 0.004914009235481716,
+  "auc_odds_signal_vs_inj_glitch": 0.9930481453252032,
+  "auc_odds_signal_vs_inj_glitch_err": 0.0012498348715378907,
   "median_logBCR": {
-    "noise": -0.7320947511113549,
-    "inj_ccsn": 42.48871951571692,
-    "inj_glitch": -32.32813489461338,
-    "real_glitch": -23.411392366935374
+    "noise": -0.7296917837344471,
+    "inj_ccsn": 43.34595887514268,
+    "inj_glitch": -36.056798295110966,
+    "real_glitch": -3.2312766534594903
   },
-  "real_glitch_misclassified": 31,
+  "real_glitch_misclassified": 61,
   "inj_glitch_misclassified": 1,
-  "signal_missed": 55
+  "signal_missed": 110
 }
