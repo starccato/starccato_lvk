@@ -184,7 +184,6 @@ class Data(ABC):
             alpha: Shape parameter of the Tukey window (default: 0.2); this is
                 the fraction of the segment that is tapered on each side.
         """
-        logging.info(f"Setting Tukey window to {self.name} data")
         self.window = jnp.array(tukey(self.n_time, alpha))
 
     def fft(

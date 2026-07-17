@@ -64,6 +64,13 @@ done
 export OMP_NUM_THREADS=${BW_THREADS}
 export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
+# BayesWavePost allocates large arrays on the stack; SLURM's default stack ulimit
+# is far smaller than an interactive login shell, so Post SIGSEGVs on compute
+# nodes while running fine interactively. Lift the stack (and enable core dumps).
+# Guarded so a site hard-cap doesn't abort the job under `set -e`.
+ulimit -s unlimited 2>/dev/null || ulimit -s 1048576 2>/dev/null || true
+ulimit -c unlimited 2>/dev/null || true
+
 srun "${PYTHON}" -m starccato_lvk.bayeswave \
   "${MANIFEST}" \
   --class "${EVENT_CLASS}" \
