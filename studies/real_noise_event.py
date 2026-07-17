@@ -42,14 +42,14 @@ except Exception:  # pragma: no cover
 CLASSES = ("noise", "inj_ccsn", "inj_glitch", "real_glitch")
 
 
-def prep_index(index, detectors, gdet, band, snr_grid, noise_offset, outdir) -> dict:
+def prep_index(index, detectors, gdet, band, snr_grid, noise_offset, outdir, blip_ifo="L1") -> dict:
     """Download real bundles, build injected bundles, and return/write a manifest."""
     flow, fmax = band
     dt = 1.0 / SAMPLE_RATE
     n_seg = int(round(4.0 * SAMPLE_RATE))
     edir = outdir / f"e{index}"
-    cat = load_blip_glitch_catalog()
-    blip_gps = get_blip_trigger_time(index)
+    cat = load_blip_glitch_catalog(ifo=blip_ifo)
+    blip_gps = get_blip_trigger_time(index, ifo=blip_ifo)
     noise_gps = blip_gps - noise_offset
     cat_snr = float(cat.iloc[index]["snr"])
     rng = np.random.default_rng(1000 + index)  # reproducible per-event draws
@@ -78,7 +78,8 @@ def prep_index(index, detectors, gdet, band, snr_grid, noise_offset, outdir) -> 
     glitch_b[gdet] = _inject_into_bundle(noise_b[gdet], inj_g, edir / "iglitch" / f"{gdet}.hdf5")
 
     manifest = {
-        "index": index, "detectors": detectors, "glitch_det": gdet, "band": list(band),
+        "index": index, "detectors": detectors, "glitch_det": gdet, "blip_ifo": blip_ifo,
+        "band": list(band),
         "sky": sky,  # targeted direction: recover the signal model here for every class
         "snr": {"noise": 0.0, "inj_ccsn": float(net_snr), "inj_glitch": float(g_snr), "real_glitch": cat_snr},
         "bundles": {
@@ -132,6 +133,8 @@ def main() -> None:
     p.add_argument("--index", type=int, required=True)
     p.add_argument("--detectors", nargs="+", default=["L1"])
     p.add_argument("--glitch-det", default="L1")
+    p.add_argument("--blip-ifo", default="L1", choices=["H1", "L1"],
+                   help="Gravity Spy catalogue for the real_glitch class (blip host detector).")
     p.add_argument("--stage", choices=["prep", "analysis", "both"], default="both")
     p.add_argument("--outdir", type=Path, default=Path("out_rn"))
     p.add_argument("--snr-grid", type=float, nargs="+", default=[10, 20, 40])
@@ -149,7 +152,7 @@ def main() -> None:
 
     if args.stage in ("prep", "both"):
         prep_index(args.index, detectors, args.glitch_det.upper(), (args.flow, args.fmax),
-                   args.snr_grid, args.noise_offset, args.outdir)
+                   args.snr_grid, args.noise_offset, args.outdir, blip_ifo=args.blip_ifo)
         print(f"[e{args.index}] prep done -> {manifest_path}")
     if args.stage in ("analysis", "both"):
         manifest = json.loads(manifest_path.read_text())
