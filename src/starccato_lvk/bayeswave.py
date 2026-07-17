@@ -679,14 +679,27 @@ def main(argv: Sequence[str] | None = None) -> int:
         signal_stats = output_dir / "post/signal/signal_stats.dat.geo"
         if not signal_stats.is_file():
             started = time.perf_counter()
-            _run(post_command, output_dir, "bayeswave_post.log")
+            try:
+                _run(post_command, output_dir, "bayeswave_post.log")
+            except subprocess.CalledProcessError as exc:
+                # The ranking statistic (signal-vs-glitch log Bayes factor) is
+                # derived from evidence.dat, written by BayesWave above.
+                # BayesWavePost only adds a diagnostic reconstructed SNR, and it
+                # has a known crash in anderson_darling_test/gsl_sort on short
+                # chains. A Post failure must not discard a completed evidence.
+                print(
+                    f"WARNING: BayesWavePost failed ({exc}); continuing without "
+                    "the reconstructed-SNR diagnostic. See bayeswave_post.log.",
+                    flush=True,
+                )
             post_elapsed = time.perf_counter() - started
         else:
             post_elapsed = float(metadata.get("post_elapsed_seconds", 0.0))
         if not signal_stats.is_file():
-            raise RuntimeError(
-                "BayesWavePost exited without creating "
-                f"{signal_stats}; inspect bayeswave_post.log"
+            print(
+                f"WARNING: BayesWavePost produced no {signal_stats}; "
+                "result.json will have signal_reconstructed_snr_median = null.",
+                flush=True,
             )
     elapsed = sampling_elapsed + post_elapsed
     metadata["completed_at"] = datetime.now(timezone.utc).isoformat()
