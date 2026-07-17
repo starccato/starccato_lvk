@@ -7,13 +7,13 @@
     "real_glitch": 797
   },
   "auc_odds_signal_vs_background": 0.9532062500589125,
-  "auc_odds_signal_vs_background_err": 0.005483134242522212,
+  "auc_odds_signal_vs_background_err": 0.005838905135969884,
   "auc_snr_signal_vs_background": 0.6115330113834524,
-  "auc_snr_signal_vs_background_err": 0.009656594813154987,
+  "auc_snr_signal_vs_background_err": 0.004416711761734171,
   "auc_odds_signal_vs_real_glitch": 0.9532221394137791,
-  "auc_odds_signal_vs_real_glitch_err": 0.005725960442897258,
+  "auc_odds_signal_vs_real_glitch_err": 0.005846688281510998,
   "auc_odds_signal_vs_inj_glitch": 0.976491981834285,
-  "auc_odds_signal_vs_inj_glitch_err": 0.0034217555358665177,
+  "auc_odds_signal_vs_inj_glitch_err": 0.003907133190941525,
   "median_logBCR": {
     "noise": -0.5816507383881117,
     "inj_ccsn": 49.51533468452804,

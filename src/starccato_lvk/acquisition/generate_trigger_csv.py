@@ -97,6 +97,7 @@ def _select_blip_triggers(
     tol_frac: float = 0.5,
     require_both_detectors: bool = True,
     detectors: tuple[str, str] = ("H1", "L1"),
+    blip_ifo: str = "L1",
     verbose: bool = False,
     log_every: int = 50,
 ) -> pd.DataFrame:
@@ -104,7 +105,7 @@ def _select_blip_triggers(
 
     Returns a DataFrame with columns: event_time, duration, snr
     """
-    df = load_blip_glitch_catalog()
+    df = load_blip_glitch_catalog(ifo=blip_ifo)
     if not {"event_time", "duration", "snr"}.issubset(df.columns):
         raise RuntimeError("blip glitch catalog missing required columns.")
 
@@ -161,6 +162,13 @@ def _select_blip_triggers(
     show_default=True,
     help="Fractional tolerance around CCSN duration for blip selection.",
 )
+@click.option(
+    "--blip-ifo",
+    type=click.Choice(["H1", "L1"]),
+    default="L1",
+    show_default=True,
+    help="Detector whose Gravity Spy blip catalogue to draw from.",
+)
 @click.option("--seed", type=int, default=0, show_default=True)
 @click.option(
     "--both-detectors/--single-detector",
@@ -175,6 +183,7 @@ def cli(
     noise_count: int,
     blip_count: int,
     blip_tol: float,
+    blip_ifo: str,
     seed: int,
     both_detectors: bool,
     verbose: bool,
@@ -208,6 +217,7 @@ def cli(
         tol_frac=blip_tol,
         require_both_detectors=both_detectors,
         detectors=("H1", "L1"),
+        blip_ifo=blip_ifo,
         verbose=verbose,
         log_every=log_every,
     )

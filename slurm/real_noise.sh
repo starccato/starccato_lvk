@@ -14,6 +14,13 @@
 #   sbatch --export=DETECTORS="L1"     slurm/real_noise.sh          # 1-detector
 #   sbatch --export=DETECTORS="H1 L1"  slurm/real_noise.sh          # 2-detector
 #
+# H1-hosted real blips (2-detector coherence test with the glitch in H1):
+#   sbatch --export=DETECTORS="H1 L1",GLITCH_DET=H1,BLIP_IFO=H1 slurm/real_noise.sh
+# Band-sensitivity runs (subsample, e.g. --array=0-299):
+#   sbatch --array=0-299 --export=DETECTORS="L1",FLOW=100,FMAX=1024 slurm/real_noise.sh
+#   sbatch --array=0-299 --export=DETECTORS="L1",FLOW=200,FMAX=1000 slurm/real_noise.sh
+# Non-default configs write to their own outdir (rn_<det>_blipH1 / rn_<det>_band<f1>_<f2>).
+#
 # The runner is IDEMPOTENT: each class writes results/e{i}_{cls}.json and is
 # skipped if it already exists. So re-submitting the SAME indices does no new
 # work (it only backfills classes that previously FAILED). To grow the sample,
@@ -42,8 +49,14 @@ INDEX=${SLURM_ARRAY_TASK_ID:-0}
 STAGE=${STAGE:-both}
 DETECTORS=${DETECTORS:-L1}
 GLITCH_DET=${GLITCH_DET:-L1}
+BLIP_IFO=${BLIP_IFO:-L1}      # Gravity Spy catalogue for the real blip (H1 or L1)
+FLOW=${FLOW:-300}             # analysis band (Hz) -- override for band-sensitivity runs
+FMAX=${FMAX:-800}
 DETTAG=$(echo "${DETECTORS}" | tr ' ' '_')
 OUTDIR=slurm/out/rn_${DETTAG}
+# Non-default configs get their own outdir so the default runs stay idempotent.
+[ "${BLIP_IFO}" != "L1" ] && OUTDIR=${OUTDIR}_blip${BLIP_IFO}
+[ "${FLOW}" != "300" -o "${FMAX}" != "800" ] && OUTDIR=${OUTDIR}_band${FLOW}_${FMAX}
 
 export OMP_NUM_THREADS=1
 module load gcc/12.3.0 python/3.11.3
@@ -54,7 +67,8 @@ srun ${VENV}/bin/python studies/real_noise_event.py \
   --index ${INDEX} \
   --detectors ${DETECTORS} \
   --glitch-det ${GLITCH_DET} \
+  --blip-ifo ${BLIP_IFO} \
   --stage ${STAGE} \
   --outdir ${OUTDIR} \
-  --flow 300 --fmax 800 \
+  --flow ${FLOW} --fmax ${FMAX} \
   --num-warmup 500 --num-samples 1000
