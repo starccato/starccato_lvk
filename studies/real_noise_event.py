@@ -42,12 +42,17 @@ except Exception:  # pragma: no cover
 CLASSES = ("noise", "inj_ccsn", "inj_glitch", "real_glitch")
 
 
+def _log(index: int, msg: str) -> None:
+    print(f"[e{index}] {msg}", flush=True)
+
+
 def prep_index(index, detectors, gdet, band, snr_grid, noise_offset, outdir, blip_ifo="L1") -> dict:
     """Download real bundles, build injected bundles, and return/write a manifest."""
     flow, fmax = band
     dt = 1.0 / SAMPLE_RATE
     n_seg = int(round(4.0 * SAMPLE_RATE))
     edir = outdir / f"e{index}"
+    _log(index, f"prep start: detectors={detectors} blip_ifo={blip_ifo} band=[{flow},{fmax}]")
     cat = load_blip_glitch_catalog(ifo=blip_ifo)
     blip_gps = get_blip_trigger_time(index, ifo=blip_ifo)
     noise_gps = blip_gps - noise_offset
@@ -63,19 +68,24 @@ def prep_index(index, detectors, gdet, band, snr_grid, noise_offset, outdir, bli
            "dec": float(np.arcsin(rng.uniform(-1.0, 1.0))),
            "psi": float(rng.uniform(0.0, np.pi)), "t_c": 0.0}
 
+    _log(index, f"fetching noise bundle @ gps={noise_gps:.1f} ...")
     noise_b = {d: _build_bundle(noise_gps, edir / "noise" / d, detector=d) for d in detectors}
+    _log(index, f"fetching real-glitch bundle @ gps={blip_gps:.1f} (catalogue snr={cat_snr:.1f}) ...")
     real_g = {d: _build_bundle(blip_gps, edir / "realg" / d, detector=d) for d in detectors}
 
+    _log(index, "preparing multi-detector data + loading VAE pools ...")
     prep = prepare_multi_detector_data(detectors, bundle_paths=noise_b, flow=flow, fmax=fmax)
     ccsn_pool = np.asarray(TrainValData.load(source="ccsne", seed=0).val) if TrainValData else None
     blip_pool = np.asarray(TrainValData.load(source="blip", seed=0).val) if TrainValData else None
     ccsn_wf = ccsn_pool[rng.integers(ccsn_pool.shape[0])] if ccsn_pool is not None else None
     blip_wf = blip_pool[rng.integers(blip_pool.shape[0])] if blip_pool is not None else None
+    _log(index, f"building injections (target snr={target:.1f}) ...")
     inj_c, net_snr = _inject_coherent(prep, target, n_seg, dt, flow, fmax, ccsn_wf, sky=sky)
     inj_g, g_snr = _inject_single_glitch(prep, gdet, target, n_seg, dt, flow, fmax, blip_wf)
     ccsn_b = {d: _inject_into_bundle(noise_b[d], inj_c[d], edir / "ccsn" / f"{d}.hdf5") for d in detectors}
     glitch_b = dict(noise_b)
     glitch_b[gdet] = _inject_into_bundle(noise_b[gdet], inj_g, edir / "iglitch" / f"{gdet}.hdf5")
+    _log(index, f"injections built: net_snr(ccsn)={net_snr:.1f} snr(glitch)={g_snr:.1f}")
 
     manifest = {
         "index": index, "detectors": detectors, "glitch_det": gdet, "blip_ifo": blip_ifo,
@@ -104,6 +114,7 @@ def analyse_manifest(manifest, outdir, num_warmup, num_samples, nsm) -> None:
         out_json = results_dir / f"e{index}_{cls}.json"
         if out_json.exists():
             continue  # idempotent: skip already-analysed class (safe for SLURM re-runs)
+        _log(index, f"analysing class={cls} ...")
         try:
             r = run_bcr_posteriors(
                 detectors=detectors, outdir=str(outdir / f"e{index}" / cls),
@@ -123,9 +134,9 @@ def analyse_manifest(manifest, outdir, num_warmup, num_samples, nsm) -> None:
                 "evidence_failures": int(r.get("evidence_failures", 0)),
             }
             out_json.write_text(json.dumps(row, indent=2))
-            print(f"[e{index} {cls:>11s}] snr={row['snr']:6.1f} logBCR={row['log_odds']:9.1f}")
+            _log(index, f"{cls:>11s} done: snr={row['snr']:6.1f} logBCR={row['log_odds']:9.1f}")
         except Exception as exc:  # noqa: BLE001
-            print(f"[e{index} {cls}] FAILED: {type(exc).__name__}: {exc}")
+            _log(index, f"{cls} FAILED: {type(exc).__name__}: {exc}")
 
 
 def main() -> None:
@@ -150,13 +161,16 @@ def main() -> None:
     args.outdir.mkdir(parents=True, exist_ok=True)
     manifest_path = args.outdir / f"e{args.index}" / "manifest.json"
 
+    _log(args.index, f"launched: stage={args.stage} detectors={detectors} "
+                      f"glitch_det={args.glitch_det} blip_ifo={args.blip_ifo} outdir={args.outdir}")
     if args.stage in ("prep", "both"):
         prep_index(args.index, detectors, args.glitch_det.upper(), (args.flow, args.fmax),
                    args.snr_grid, args.noise_offset, args.outdir, blip_ifo=args.blip_ifo)
-        print(f"[e{args.index}] prep done -> {manifest_path}")
+        _log(args.index, f"prep done -> {manifest_path}")
     if args.stage in ("analysis", "both"):
         manifest = json.loads(manifest_path.read_text())
         analyse_manifest(manifest, args.outdir, args.num_warmup, args.num_samples, not args.no_marginal)
+    _log(args.index, "all stages complete")
 
 
 if __name__ == "__main__":

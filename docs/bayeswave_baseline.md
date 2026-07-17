@@ -30,7 +30,7 @@ ranking statistic.
 - Shared output storage for chains and post-processing products. Keep the
   eight-run pilot until its per-run disk usage is measured; budget tens of GB
   for the 100-run campaign. The supplied SLURM script defaults to
-  `/fred/oz303/avajpeyi/results/starccato_lvk/bayeswave_H1_L1`, outside the Git
+  `/fred/oz980/avajpeyi/results/starccato_lvk/bayeswave_H1_L1`, outside the Git
   checkout; override `OUTPUT_ROOT` if needed.
 
 The Starccato JAX environment is not used for sampling.  The runner only needs
@@ -41,8 +41,9 @@ the repository on `PYTHONPATH` so it can read the event manifest and bundle.
 Create an isolated prefix; do not modify the Starccato virtual environment:
 
 ```bash
-micromamba create -y \
-  -p /fred/oz303/avajpeyi/envs/bayeswave \
+module load mamba
+mamba create -y \
+  -p /fred/oz980/avajpeyi/envs/bayeswave \
   -c conda-forge --strict-channel-priority \
   'bayeswave=1.1.3' 'bayeswaveutils=1.1.3' \
   gwpy h5py numpy
@@ -51,8 +52,8 @@ micromamba create -y \
 Validate the executable and frame-writing dependencies:
 
 ```bash
-/fred/oz303/avajpeyi/envs/bayeswave/bin/BayesWave --help
-/fred/oz303/avajpeyi/envs/bayeswave/bin/python -c \
+/fred/oz980/avajpeyi/envs/bayeswave/bin/BayesWave --help
+/fred/oz980/avajpeyi/envs/bayeswave/bin/python -c \
   'import gwpy, h5py, numpy; print("BayesWave Python dependencies OK")'
 ```
 
@@ -88,8 +89,7 @@ The checked-in SLURM array runs four event indices, with one injected CCSN and
 one real glitch per index (eight runs):
 
 ```bash
-sbatch --export=BAYESWAVE_ENV=/fred/oz303/avajpeyi/envs/bayeswave \
-  slurm/bayeswave_pilot.sh
+sbatch slurm/bayeswave_pilot.sh
 ```
 
 Each run writes:
@@ -112,7 +112,6 @@ After the pilot passes:
 
 ```bash
 sbatch --array=0-99 \
-  --export=BAYESWAVE_ENV=/fred/oz303/avajpeyi/envs/bayeswave \
   slurm/bayeswave_pilot.sh
 ```
 

@@ -8,9 +8,8 @@
 # After validating those outputs, scale to the planned 100-run comparison:
 #   sbatch --array=0-99 slurm/bayeswave_pilot.sh
 #
-# Required environment variables:
-#   BAYESWAVE_ENV  conda/mamba prefix containing BayesWave and BayesWavePost
 # Optional overrides:
+#   BAYESWAVE_ENV  conda/mamba prefix containing BayesWave and BayesWavePost
 #   MANIFEST_ROOT  existing rn_H1_L1 output (default below)
 #   OUTPUT_ROOT    BayesWave output root
 #   BW_NITER, BW_BURNIN, BW_NCHAIN, BW_THREADS
@@ -18,6 +17,7 @@
 # Install command and validation are documented in docs/bayeswave_baseline.md.
 
 #SBATCH --job-name=starccato_bw
+#SBATCH --account=oz980
 #SBATCH --array=0-7
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=10G
@@ -28,6 +28,7 @@
 set -euo pipefail
 
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
+REPO_ROOT=${SLURM_SUBMIT_DIR:-$PWD}
 EVENT_INDEX=$((TASK_ID / 2))
 if (( TASK_ID % 2 == 0 )); then
   EVENT_CLASS=inj_ccsn
@@ -35,9 +36,9 @@ else
   EVENT_CLASS=real_glitch
 fi
 
-BAYESWAVE_ENV=${BAYESWAVE_ENV:-/fred/oz303/avajpeyi/envs/bayeswave}
-MANIFEST_ROOT=${MANIFEST_ROOT:-slurm/out/rn_H1_L1}
-OUTPUT_ROOT=${OUTPUT_ROOT:-/fred/oz303/avajpeyi/results/starccato_lvk/bayeswave_H1_L1}
+BAYESWAVE_ENV=${BAYESWAVE_ENV:-/fred/oz980/avajpeyi/envs/bayeswave}
+MANIFEST_ROOT=${MANIFEST_ROOT:-${REPO_ROOT}/slurm/out/rn_H1_L1}
+OUTPUT_ROOT=${OUTPUT_ROOT:-/fred/oz980/avajpeyi/results/starccato_lvk/bayeswave_H1_L1}
 BW_NITER=${BW_NITER:-1000000}
 BW_BURNIN=${BW_BURNIN:-100000}
 BW_NCHAIN=${BW_NCHAIN:-20}
@@ -61,7 +62,7 @@ for executable in "${PYTHON}" "${BAYESWAVE}" "${BAYESWAVE_POST}"; do
 done
 
 export OMP_NUM_THREADS=${BW_THREADS}
-export PYTHONPATH="${PWD}/src${PYTHONPATH:+:${PYTHONPATH}}"
+export PYTHONPATH="${REPO_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 srun "${PYTHON}" -m starccato_lvk.bayeswave \
   "${MANIFEST}" \
