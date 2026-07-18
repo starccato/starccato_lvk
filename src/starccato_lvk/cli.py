@@ -40,9 +40,7 @@ from .workflows.run_event import (
 @click.group()
 @click.version_option("1.0.0")
 def cli():
-    """Starccato LVK: VAE PE toolkit for CCSNe LnZ computation.
-
-    """
+    """Starccato LVK: VAE PE toolkit for CCSNe LnZ computation."""
     pass
 
 
@@ -53,11 +51,19 @@ def acquire_group():
 
 
 @acquire_group.command("data")
-@click.argument('index', type=int)
-@click.option('--trigger-type', type=click.Choice(['blip', 'noise']),
-              default='blip', help='Type of trigger to analyze')
-@click.option('--outdir', type=str, default=None,
-              help='Output directory (default: outdir_<trigger_type>)')
+@click.argument("index", type=int)
+@click.option(
+    "--trigger-type",
+    type=click.Choice(["blip", "noise"]),
+    default="blip",
+    help="Type of trigger to analyze",
+)
+@click.option(
+    "--outdir",
+    type=str,
+    default=None,
+    help="Output directory (default: outdir_<trigger_type>)",
+)
 def acquire_data(index, trigger_type, outdir):
     """Acquire LVK data for a specific trigger index.
 
@@ -70,7 +76,7 @@ def acquire_data(index, trigger_type, outdir):
         outdir: Output directory for results
     """
     if outdir is None:
-        outdir = f'outdir_{trigger_type}'
+        outdir = f"outdir_{trigger_type}"
 
     click.echo(f"Acquiring {trigger_type} data for index {index}...")
     click.echo(f"Output directory: {outdir}")
@@ -82,9 +88,13 @@ def acquire_data(index, trigger_type, outdir):
 
 
 @acquire_group.command("batch")
-@click.argument('num_samples', type=int)
-@click.option('--outdir', type=str, default='outdir_batch',
-              help='Output directory for batch acquisition')
+@click.argument("num_samples", type=int)
+@click.option(
+    "--outdir",
+    type=str,
+    default="outdir_batch",
+    help="Output directory for batch acquisition",
+)
 def acquire_batch(num_samples, outdir):
     """Acquire multiple LVK data samples in batch.
 
@@ -152,8 +162,17 @@ def events_generate(outdir, blip_count, noise_file, noise_inj_file):
 
 
 @events_group.command("run")
-@click.option("--scenario", type=click.Choice(["blip", "noise", "noise_inj"]), required=True)
-@click.option("--index", type=int, required=True, help="Event index (e.g. SLURM_ARRAY_TASK_ID).")
+@click.option(
+    "--scenario",
+    type=click.Choice(["blip", "noise", "noise_inj"]),
+    required=True,
+)
+@click.option(
+    "--index",
+    type=int,
+    required=True,
+    help="Event index (e.g. SLURM_ARRAY_TASK_ID).",
+)
 @click.option(
     "--config",
     type=click.Path(exists=True, dir_okay=False),
@@ -168,8 +187,16 @@ def events_generate(outdir, blip_count, noise_file, noise_inj_file):
     show_default=True,
     help="Directory containing events_<scenario>.txt files.",
 )
-@click.option("--force", is_flag=True, help="Re-run analysis even if summary exists.")
-@click.option("--distance", type=float, default=1.0, show_default=True, help="Injection distance scale for noise_inj scenario.")
+@click.option(
+    "--force", is_flag=True, help="Re-run analysis even if summary exists."
+)
+@click.option(
+    "--distance",
+    type=float,
+    default=1.0,
+    show_default=True,
+    help="Injection distance scale for noise_inj scenario.",
+)
 @click.option(
     "--stage",
     type=click.Choice(["prep", "analysis", "both"]),
@@ -191,9 +218,13 @@ def events_run(scenario, index, config, events_dir, force, distance, stage):
         stage=stage,
     )
     if result is None:
-        click.echo("Workflow completed with no new analysis (results already present).")
+        click.echo(
+            "Workflow completed with no new analysis (results already present)."
+        )
     else:
-        click.echo(f"Analysis complete for {scenario} @ {gps}. BCR={result.get('bcr')}")
+        click.echo(
+            f"Analysis complete for {scenario} @ {gps}. BCR={result.get('bcr')}"
+        )
 
 
 @cli.command(name="run")
@@ -231,14 +262,76 @@ def events_run(scenario, index, config, events_dir, force, distance, stage):
     show_default=True,
     help="Inference engine to use.",
 )
-@click.option("--num-samples", type=int, default=1000, show_default=True, help="NumPyro samples (NUTS).")
-@click.option("--num-warmup", type=int, default=500, show_default=True, help="NumPyro warmup steps (NUTS).")
-@click.option("--num-chains", type=int, default=1, show_default=True, help="NumPyro chains (NUTS).")
-@click.option("--num-live-points", type=int, default=500, show_default=True, help="Nested sampling live points.")
-@click.option("--max-samples", type=int, default=20000, show_default=True, help="Nested sampling max samples.")
-@click.option("--latent-sigma", type=float, default=1.0, show_default=True, help="Latent prior standard deviation.")
-@click.option("--log-amp-sigma", type=float, default=1.0, show_default=True, help="Log-amplitude prior sigma.")
-@click.option("--rng-seed", type=int, default=0, show_default=True, help="Random seed for reproducibility.")
+@click.option(
+    "--num-samples",
+    type=int,
+    default=1000,
+    show_default=True,
+    help="NumPyro samples (NUTS).",
+)
+@click.option(
+    "--num-warmup",
+    type=int,
+    default=500,
+    show_default=True,
+    help="NumPyro warmup steps (NUTS).",
+)
+@click.option(
+    "--num-chains",
+    type=click.IntRange(min=2),
+    default=2,
+    show_default=True,
+    help="NumPyro chains (NUTS; at least two are required).",
+)
+@click.option(
+    "--target-accept-prob",
+    type=click.FloatRange(min=0.0, max=1.0, min_open=True, max_open=True),
+    default=0.8,
+    show_default=True,
+    help="NUTS target acceptance probability.",
+)
+@click.option(
+    "--max-tree-depth",
+    type=click.IntRange(min=1),
+    default=10,
+    show_default=True,
+    help="Maximum NUTS tree depth.",
+)
+@click.option(
+    "--num-live-points",
+    type=int,
+    default=500,
+    show_default=True,
+    help="Nested sampling live points.",
+)
+@click.option(
+    "--max-samples",
+    type=int,
+    default=20000,
+    show_default=True,
+    help="Nested sampling max samples.",
+)
+@click.option(
+    "--latent-sigma",
+    type=float,
+    default=1.0,
+    show_default=True,
+    help="Latent prior standard deviation.",
+)
+@click.option(
+    "--log-amp-sigma",
+    type=float,
+    default=1.0,
+    show_default=True,
+    help="Log-amplitude prior sigma.",
+)
+@click.option(
+    "--rng-seed",
+    type=int,
+    default=0,
+    show_default=True,
+    help="Random seed for reproducibility.",
+)
 @click.option(
     "--extrinsic",
     "extrinsic_pairs",
@@ -261,6 +354,8 @@ def run_command(
     num_samples: int,
     num_warmup: int,
     num_chains: int,
+    target_accept_prob: float,
+    max_tree_depth: int,
     num_live_points: int,
     max_samples: int,
     latent_sigma: float,
@@ -275,7 +370,10 @@ def run_command(
     bundle_map = {}
     for pair in bundle_pairs:
         if "=" not in pair:
-            raise click.BadOptionUsage("--bundle", f"Bundle specification '{pair}' must be DETECTOR=PATH.")
+            raise click.BadOptionUsage(
+                "--bundle",
+                f"Bundle specification '{pair}' must be DETECTOR=PATH.",
+            )
         det, path = pair.split("=", 1)
         bundle_map[det.upper()] = path
 
@@ -288,12 +386,17 @@ def run_command(
     extrinsics = {}
     for pair in extrinsic_pairs:
         if "=" not in pair:
-            raise click.BadOptionUsage("--extrinsic", f"Extrinsic specification '{pair}' must be key=value.")
+            raise click.BadOptionUsage(
+                "--extrinsic",
+                f"Extrinsic specification '{pair}' must be key=value.",
+            )
         key, value = pair.split("=", 1)
         try:
             extrinsics[key] = float(value)
         except ValueError as exc:
-            raise click.BadOptionUsage("--extrinsic", f"Value '{value}' for '{key}' is not a float.") from exc
+            raise click.BadOptionUsage(
+                "--extrinsic", f"Value '{value}' for '{key}' is not a float."
+            ) from exc
 
     models_to_run = list(model_types) if model_types else list(MODELS)
 
@@ -307,6 +410,8 @@ def run_command(
         num_samples=num_samples,
         num_warmup=num_warmup,
         num_chains=num_chains,
+        target_accept_prob=target_accept_prob,
+        max_tree_depth=max_tree_depth,
         num_live_points=num_live_points,
         max_samples=max_samples,
         latent_sigma=latent_sigma,
@@ -334,19 +439,70 @@ def run_command(
     default=(),
     help="Optional explicit detector order (defaults to bundle keys).",
 )
-@click.option("--signal-model", type=click.Choice(MODELS), default="ccsne", show_default=True)
-@click.option("--glitch-model", type=click.Choice(MODELS), default="blip", show_default=True)
+@click.option(
+    "--signal-model",
+    type=click.Choice(MODELS),
+    default="ccsne",
+    show_default=True,
+)
+@click.option(
+    "--glitch-model",
+    type=click.Choice(MODELS),
+    default="blip",
+    show_default=True,
+)
 @click.option("--num-warmup", type=int, default=500, show_default=True)
 @click.option("--num-samples", type=int, default=1000, show_default=True)
-@click.option("--num-chains", type=int, default=1, show_default=True)
-@click.option("--signal-latent-sigma", type=float, default=1.0, show_default=True)
-@click.option("--signal-log-amp-sigma", type=float, default=1.0, show_default=True)
-@click.option("--glitch-latent-sigma", type=float, default=0.5, show_default=True)
-@click.option("--glitch-log-amp-sigma", type=float, default=0.1, show_default=True)
+@click.option(
+    "--num-chains", type=click.IntRange(min=2), default=2, show_default=True
+)
+@click.option(
+    "--target-accept-prob",
+    type=click.FloatRange(min=0.0, max=1.0, min_open=True, max_open=True),
+    default=0.8,
+    show_default=True,
+)
+@click.option(
+    "--max-tree-depth",
+    type=click.IntRange(min=1),
+    default=10,
+    show_default=True,
+)
+@click.option(
+    "--signal-latent-sigma", type=float, default=1.0, show_default=True
+)
+@click.option(
+    "--signal-log-amp-sigma", type=float, default=5.0, show_default=True
+)
+@click.option(
+    "--glitch-latent-sigma", type=float, default=1.0, show_default=True
+)
+@click.option(
+    "--glitch-log-amp-sigma", type=float, default=5.0, show_default=True
+)
 @click.option("--rng-seed", type=int, default=0, show_default=True)
-@click.option("--alpha", type=float, default=1.0, show_default=True, help="Prior odds factor α for BCR.")
-@click.option("--beta", type=float, default=0.5, show_default=True, help="Glitch prior weight β for BCR.")
-@click.option("--ci", nargs=2, type=int, default=(5, 95), show_default=True, help="Credible interval percentiles for predictive plots.")
+@click.option(
+    "--alpha",
+    type=float,
+    default=1.0,
+    show_default=True,
+    help="Prior odds factor α for BCR.",
+)
+@click.option(
+    "--beta",
+    type=float,
+    default=0.5,
+    show_default=True,
+    help="Glitch prior weight β for BCR.",
+)
+@click.option(
+    "--ci",
+    nargs=2,
+    type=int,
+    default=(5, 95),
+    show_default=True,
+    help="Credible interval percentiles for predictive plots.",
+)
 @click.option(
     "--extrinsic",
     "extrinsic_pairs",
@@ -368,6 +524,8 @@ def run_bcr_command(
     num_warmup: int,
     num_samples: int,
     num_chains: int,
+    target_accept_prob: float,
+    max_tree_depth: int,
     signal_latent_sigma: float,
     signal_log_amp_sigma: float,
     glitch_latent_sigma: float,
@@ -384,24 +542,35 @@ def run_bcr_command(
     bundle_map: dict[str, str] = {}
     for pair in bundle_pairs:
         if "=" not in pair:
-            raise click.BadOptionUsage("--bundle", f"Bundle specification '{pair}' must be DET=PATH.")
+            raise click.BadOptionUsage(
+                "--bundle", f"Bundle specification '{pair}' must be DET=PATH."
+            )
         det, path = pair.split("=", 1)
         bundle_map[det.upper()] = path
 
     if not bundle_map:
         raise click.UsageError("At least one --bundle DET=PATH is required.")
 
-    detector_list = [d.upper() for d in detectors] if detectors else sorted(bundle_map.keys())
+    detector_list = (
+        [d.upper() for d in detectors]
+        if detectors
+        else sorted(bundle_map.keys())
+    )
 
     extrinsics: dict[str, float] = {}
     for pair in extrinsic_pairs:
         if "=" not in pair:
-            raise click.BadOptionUsage("--extrinsic", f"Extrinsic specification '{pair}' must be key=value.")
+            raise click.BadOptionUsage(
+                "--extrinsic",
+                f"Extrinsic specification '{pair}' must be key=value.",
+            )
         key, value = pair.split("=", 1)
         try:
             extrinsics[key] = float(value)
         except ValueError as exc:
-            raise click.BadOptionUsage("--extrinsic", f"Value '{value}' for '{key}' is not a float.") from exc
+            raise click.BadOptionUsage(
+                "--extrinsic", f"Value '{value}' for '{key}' is not a float."
+            ) from exc
 
     result = run_bcr_posteriors(
         detectors=detector_list,
@@ -417,6 +586,8 @@ def run_bcr_command(
         num_samples=num_samples,
         num_warmup=num_warmup,
         num_chains=num_chains,
+        target_accept_prob=target_accept_prob,
+        max_tree_depth=max_tree_depth,
         rng_seed=rng_seed,
         save_artifacts=save_artifacts,
         ci=ci,
@@ -428,7 +599,6 @@ def run_bcr_command(
     summary_path.parent.mkdir(parents=True, exist_ok=True)
     summary_path.write_text(json.dumps(result, indent=2, sort_keys=True))
     click.echo(f"BCR analysis complete. Summary written to {summary_path}")
-
 
 
 if __name__ == "__main__":
