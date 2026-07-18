@@ -20,8 +20,8 @@
 #SBATCH --account=oz980
 #SBATCH --array=0-7
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=10G
-#SBATCH --time=24:00:00
+#SBATCH --mem=2G
+#SBATCH --time=02:00:00
 #SBATCH --output=slurm/logs/bw_%A_%a.out
 #SBATCH --error=slurm/logs/bw_%A_%a.err
 

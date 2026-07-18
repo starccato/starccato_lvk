@@ -1,0 +1,83 @@
+{
+  "single": {
+    "n_rows": 3163,
+    "class_counts": {
+      "noise": 859,
+      "inj_ccsn": 820,
+      "inj_glitch": 768,
+      "real_glitch": 716
+    },
+    "n_complete_four_class_groups": 716,
+    "n_incomplete_groups": 143
+  },
+  "network": {
+    "n_rows": 3191,
+    "class_counts": {
+      "noise": 798,
+      "inj_ccsn": 798,
+      "inj_glitch": 798,
+      "real_glitch": 797
+    },
+    "n_complete_four_class_groups": 797,
+    "n_incomplete_groups": 1
+  },
+  "paired_class_counts": {
+    "noise": 714,
+    "inj_ccsn": 679,
+    "inj_glitch": 634,
+    "real_glitch": 589
+  },
+  "paired_auc": {
+    "single": {
+      "signal_vs_combined_background": 0.9785123891537785,
+      "signal_vs_noise": 0.9780056352437883,
+      "signal_vs_inj_glitch": 0.9940509099018319,
+      "signal_vs_real_glitch": 0.9624010141749452
+    },
+    "network": {
+      "signal_vs_combined_background": 0.9495636861581648,
+      "signal_vs_noise": 0.9259600747515501,
+      "signal_vs_inj_glitch": 0.9742593255065205,
+      "signal_vs_real_glitch": 0.9515941499908734
+    }
+  },
+  "threshold_transitions": {
+    "real_glitch": {
+      "n_pairs": 589,
+      "single_error_count": 48,
+      "single_error_rate": 0.08149405772495756,
+      "network_error_count": 18,
+      "network_error_rate": 0.030560271646859084,
+      "error_in_both": 13,
+      "corrected_by_network": 35,
+      "worsened_by_network": 5,
+      "exact_mcnemar_p": 1.382612026645802e-06,
+      "median_log_odds_delta": 0.08015453313067677,
+      "log_odds_delta_q16_q84": [
+        -5.8677679681398995,
+        0.5435047306508772
+      ]
+    },
+    "inj_ccsn": {
+      "n_pairs": 679,
+      "single_error_count": 87,
+      "single_error_rate": 0.12812960235640647,
+      "network_error_count": 93,
+      "network_error_rate": 0.13696612665684832,
+      "error_in_both": 69,
+      "corrected_by_network": 18,
+      "worsened_by_network": 24,
+      "exact_mcnemar_p": 0.44079906734259566,
+      "median_log_odds_delta": 4.066785363162282,
+      "log_odds_delta_q16_q84": [
+        -7.915104828312941,
+        26.13629210198699
+      ]
+    }
+  },
+  "notes": [
+    "AUC cohorts use the class-specific index intersection between configurations.",
+    "Threshold transitions are paired at identical catalogue indices.",
+    "Backfill incomplete four-class groups before final population figures."
+  ]
+}
