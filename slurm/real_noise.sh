@@ -1,74 +1,126 @@
 #!/bin/bash
-# Real-noise analysis study on OzSTAR -- one array task per blip-catalogue index,
-# four event classes each (noise, inj_ccsn, inj_glitch, real_glitch).
+# Production NUTS+MorphLnZ runner. One array task is one catalogue index and,
+# for analysis, exactly one event class. Preparation and results live outside
+# the Git checkout under a required immutable CAMPAIGN_ID.
 #
-# STRAIN IS READ FROM THE LOCAL LVK MIRROR (config.BASE_DATA_DIR =
-# /datasets/LIGO/.../O3b/strain.4k/hdf.v1), so compute nodes need NO internet and
-# there is no CAT3 gate -> a single-stage 'both' run per index is enough.
+# Required submission variables:
+#   CAMPAIGN_ID   e.g. nuts_morphlnz_v040_20260718
+#   DETECTORS     "H1", "L1", or "H1 L1"
 #
-# ONE-TIME PRE-CACHE (on an internet-capable 'inode'), to populate the venv cache
-# with the VAE weights + held-out training data + blip catalogue:
-#   python studies/real_noise_event.py --index 0 --detectors L1 --stage both --outdir slurm/out/rn_L1
+# Common optional variables:
+#   STAGE, CLASS, BLIP_IFO, GLITCH_DET, RESULTS_ROOT, VENV
+#   FLOW, FMAX, NUM_WARMUP, NUM_SAMPLES, NUM_CHAINS
+#   TARGET_ACCEPT_PROB, MAX_TREE_DEPTH, MAP_NUM_STARTS, MAP_MAXITER
 #
-# Then launch the arrays (no dependency needed -- strain is local):
-#   sbatch --export=DETECTORS="L1"     slurm/real_noise.sh          # 1-detector
-#   sbatch --export=DETECTORS="H1 L1"  slurm/real_noise.sh          # 2-detector
-#
-# H1-hosted real blips (2-detector coherence test with the glitch in H1):
-#   sbatch --export=DETECTORS="H1 L1",GLITCH_DET=H1,BLIP_IFO=H1 slurm/real_noise.sh
-# Band-sensitivity runs (subsample, e.g. --array=0-299):
-#   sbatch --array=0-299 --export=DETECTORS="L1",FLOW=100,FMAX=1024 slurm/real_noise.sh
-#   sbatch --array=0-299 --export=DETECTORS="L1",FLOW=200,FMAX=1000 slurm/real_noise.sh
-# Non-default configs write to their own outdir (rn_<det>_blipH1 / rn_<det>_band<f1>_<f2>).
-#
-# The runner is IDEMPOTENT: each class writes results/e{i}_{cls}.json and is
-# skipped if it already exists. So re-submitting the SAME indices does no new
-# work (it only backfills classes that previously FAILED). To grow the sample,
-# point the array at a FRESH index range (overrides the #SBATCH --array below):
-#   sbatch --array=200-599 --export=DETECTORS="L1"    slurm/real_noise.sh   # new events
-#   sbatch --array=0-199   --export=DETECTORS="H1 L1" slurm/real_noise.sh   # backfill failures
-# The blip catalogue has ~1178 rows, so indices up to ~1177 are valid.
-#
-#   # aggregate + plot when done:
-#   python studies/real_noise_aggregate.py --outdir slurm/out/rn_L1
-#   python studies/real_noise_plots.py     --l1 slurm/out/rn_L1 --h1l1 slurm/out/rn_H1_L1
-#
-# (If run on a system WITHOUT the local mirror, each task falls back to a GWOSC
-#  download, so use STAGE=prep on a data-mover node then STAGE=analysis on compute.)
-#
-#SBATCH --job-name=starccato_rn
-#SBATCH --array=0-199
+# Example pilot:
+#   sbatch --array=0-9%10 \
+#     --export=ALL,CAMPAIGN_ID=nuts_morphlnz_v040_20260718,STAGE=prep,DETECTORS=L1 \
+#     slurm/real_noise.sh
+#   sbatch --array=0-9%10 \
+#     --export=ALL,CAMPAIGN_ID=nuts_morphlnz_v040_20260718,STAGE=analysis,CLASS=noise,DETECTORS=L1 \
+#     slurm/real_noise.sh
+
+#SBATCH --job-name=starccato_nml
+#SBATCH --account=oz303
+#SBATCH --array=0-9%10
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=10G
-#SBATCH --time=03:00:00
-#SBATCH --output=slurm/logs/rn_%A_%a.out
-#SBATCH --error=slurm/logs/rn_%A_%a.err
+#SBATCH --time=12:00:00
+#SBATCH --output=slurm/logs/nml_%A_%a.out
+#SBATCH --error=slurm/logs/nml_%A_%a.err
 
-VENV=/fred/oz303/avajpeyi/codes/starccato_lvk/.venv
-INDEX=${SLURM_ARRAY_TASK_ID:-0}
-STAGE=${STAGE:-both}
-DETECTORS=${DETECTORS:-L1}
-GLITCH_DET=${GLITCH_DET:-L1}
-BLIP_IFO=${BLIP_IFO:-L1}      # Gravity Spy catalogue for the real blip (H1 or L1)
-FLOW=${FLOW:-300}             # analysis band (Hz) -- override for band-sensitivity runs
+set -euo pipefail
+
+CAMPAIGN_ID=${CAMPAIGN_ID:?set an immutable CAMPAIGN_ID}
+DETECTORS=${DETECTORS:?set DETECTORS to H1, L1, or "H1 L1"}
+REPO_ROOT=${SLURM_SUBMIT_DIR:-$PWD}
+VENV=${VENV:-/fred/oz303/avajpeyi/codes/starccato_lvk/.venv}
+RESULTS_ROOT=${RESULTS_ROOT:-/fred/oz303/avajpeyi/results/starccato_lvk}
+# INDEX_OFFSET keeps array values < MaxArraySize for catalogues > ~1000 events.
+INDEX=$(( ${SLURM_ARRAY_TASK_ID:-0} + ${INDEX_OFFSET:-0} ))
+STAGE=${STAGE:-analysis}
+CLASS=${CLASS:-}
+BLIP_IFO=${BLIP_IFO:-L1}
+GLITCH_DET=${GLITCH_DET:-${BLIP_IFO}}
+PREP_CLASSES=${PREP_CLASSES:-"noise inj_ccsn real_glitch"}
+FLOW=${FLOW:-300}
 FMAX=${FMAX:-800}
-DETTAG=$(echo "${DETECTORS}" | tr ' ' '_')
-OUTDIR=slurm/out/rn_${DETTAG}
-# Non-default configs get their own outdir so the default runs stay idempotent.
-[ "${BLIP_IFO}" != "L1" ] && OUTDIR=${OUTDIR}_blip${BLIP_IFO}
-[ "${FLOW}" != "300" -o "${FMAX}" != "800" ] && OUTDIR=${OUTDIR}_band${FLOW}_${FMAX}
+NUM_WARMUP=${NUM_WARMUP:-500}
+NUM_SAMPLES=${NUM_SAMPLES:-1000}
+NUM_CHAINS=${NUM_CHAINS:-2}
+TARGET_ACCEPT_PROB=${TARGET_ACCEPT_PROB:-0.8}
+MAX_TREE_DEPTH=${MAX_TREE_DEPTH:-10}
+MAP_NUM_STARTS=${MAP_NUM_STARTS:-128}
+MAP_MAXITER=${MAP_MAXITER:-400}
 
+DETTAG=$(echo "${DETECTORS}" | tr ' ' '_')
+OUTDIR=${RESULTS_ROOT}/${CAMPAIGN_ID}/rn_${DETTAG}
+if [[ "${BLIP_IFO}" != "L1" ]]; then
+  OUTDIR=${OUTDIR}_blip${BLIP_IFO}
+fi
+if [[ "${FLOW}" != "300" || "${FMAX}" != "800" ]]; then
+  OUTDIR=${OUTDIR}_band${FLOW}_${FMAX}
+fi
+
+case " ${DETECTORS} " in
+  *" ${GLITCH_DET} "*) ;;
+  *)
+    echo "GLITCH_DET=${GLITCH_DET} is absent from DETECTORS=${DETECTORS}" >&2
+    exit 2
+    ;;
+esac
+case "${OUTDIR}" in
+  "${REPO_ROOT}"/*)
+    echo "Production output must be outside the Git checkout: ${OUTDIR}" >&2
+    exit 2
+    ;;
+esac
+if [[ "${STAGE}" == "analysis" && -z "${CLASS}" ]]; then
+  echo "Analysis submissions must set CLASS to one event class" >&2
+  exit 2
+fi
+if [[ ! -x "${VENV}/bin/python" ]]; then
+  echo "Missing environment interpreter: ${VENV}/bin/python" >&2
+  exit 2
+fi
+
+cd "${REPO_ROOT}"
+if [[ -n "$(git status --porcelain)" ]]; then
+  echo "Refusing a production run from a dirty Git checkout" >&2
+  git status --short >&2
+  exit 2
+fi
+mkdir -p slurm/logs "${OUTDIR}"
 export OMP_NUM_THREADS=1
 module load gcc/12.3.0 python/3.11.3
-source ${VENV}/bin/activate
+source "${VENV}/bin/activate"
+"${VENV}/bin/python" -c \
+  'from importlib.metadata import version; from packaging.version import Version; assert Version(version("starccato-jax")) >= Version("0.4.0"), version("starccato-jax")'
 
-# data-mover nodes lack a GPU/heavy compute; compute nodes may lack internet -> split stages.
-srun ${VENV}/bin/python studies/real_noise_event.py \
-  --index ${INDEX} \
-  --detectors ${DETECTORS} \
-  --glitch-det ${GLITCH_DET} \
-  --blip-ifo ${BLIP_IFO} \
-  --stage ${STAGE} \
-  --outdir ${OUTDIR} \
-  --flow ${FLOW} --fmax ${FMAX} \
-  --num-warmup 500 --num-samples 1000
+RUNNER_ARGS=(
+  --index "${INDEX}"
+  --detectors ${DETECTORS}
+  --glitch-det "${GLITCH_DET}"
+  --blip-ifo "${BLIP_IFO}"
+  --stage "${STAGE}"
+  --campaign-id "${CAMPAIGN_ID}"
+  --outdir "${OUTDIR}"
+  --flow "${FLOW}"
+  --fmax "${FMAX}"
+  --num-warmup "${NUM_WARMUP}"
+  --num-samples "${NUM_SAMPLES}"
+  --num-chains "${NUM_CHAINS}"
+  --target-accept-prob "${TARGET_ACCEPT_PROB}"
+  --max-tree-depth "${MAX_TREE_DEPTH}"
+  --map-num-starts "${MAP_NUM_STARTS}"
+  --map-maxiter "${MAP_MAXITER}"
+)
+if [[ "${STAGE}" == "prep" || "${STAGE}" == "both" ]]; then
+  read -r -a PREP_CLASS_ARRAY <<< "${PREP_CLASSES}"
+  RUNNER_ARGS+=(--prep-classes "${PREP_CLASS_ARRAY[@]}")
+fi
+if [[ -n "${CLASS}" ]]; then
+  RUNNER_ARGS+=(--class "${CLASS}")
+fi
+
+srun "${VENV}/bin/python" studies/real_noise_event.py "${RUNNER_ARGS[@]}"

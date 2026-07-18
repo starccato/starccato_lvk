@@ -9804,7 +9804,7 @@ requires-dist = [
     { name = "pytest-cov", marker = "extra == 'dev'" },
     { name = "ripplegw" },
     { name = "scipy" },
-    { name = "starccato-jax", specifier = ">=0.1.16" },
+    { name = "starccato-jax", specifier = ">=0.4.0" },
     { name = "tqdm" },
 ]
 provides-extras = ["dev"]

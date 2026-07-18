@@ -12,7 +12,13 @@ two-detector (H1 L1) runs, and produces:
                        false-alarm rate when ranking by the odds.
   summary_table.tex    AUCs + misclassification rates for the manuscript.
 
-    uv run python studies/real_noise_plots.py --l1 slurm/out/rn_L1 --h1l1 slurm/out/rn_H1_L1
+    uv run python studies/real_noise_plots.py \
+        --l1 /fred/.../CAMPAIGN/rn_L1 \
+        --h1l1 /fred/.../CAMPAIGN/rn_H1_L1
+
+For the H1-hosted paired comparison, add for example
+``--h1 /fred/.../CAMPAIGN/rn_H1_blipH1`` and point ``--h1l1`` at the corresponding
+``rn_H1_L1_blipH1`` result directory.
 
 Either --l1 or --h1l1 may be omitted; whatever is present is plotted.
 """
@@ -37,32 +43,33 @@ from snr_vs_odds_roc import _roc_auc
 from real_noise_aggregate import _boot_auc_err
 
 # Publication style for figures included in the two-column AASTeX manuscript.
-plt.rcParams.update({
-    "font.family": "serif",
-    "mathtext.fontset": "dejavuserif",
-    "font.size": 9,
-    "axes.labelsize": 9,
-    "axes.titlesize": 9.5,
-    "legend.fontsize": 8,
-    "xtick.labelsize": 8,
-    "ytick.labelsize": 8,
-    "axes.linewidth": 0.8,
-    "axes.grid": False,
-    "axes.spines.top": False,
-    "axes.spines.right": False,
-    "axes.facecolor": "white",
-    "figure.facecolor": "white",
-    "xtick.direction": "out",
-    "ytick.direction": "out",
-    "pdf.fonttype": 42,
-    "ps.fonttype": 42,
-    "lines.linewidth": 1.4,
-    "savefig.dpi": 300,
-})
+plt.rcParams.update(
+    {
+        "font.family": "serif",
+        "mathtext.fontset": "dejavuserif",
+        "font.size": 9,
+        "axes.labelsize": 9,
+        "axes.titlesize": 9.5,
+        "legend.fontsize": 8,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "axes.linewidth": 0.8,
+        "axes.grid": False,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "axes.facecolor": "white",
+        "figure.facecolor": "white",
+        "xtick.direction": "out",
+        "ytick.direction": "out",
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+        "lines.linewidth": 1.4,
+        "savefig.dpi": 300,
+    }
+)
 PANEL_W, PANEL_H = 3.5, 2.9
 
 CLASSES = ("noise", "inj_ccsn", "inj_glitch", "real_glitch")
-BACKGROUND = ("noise", "inj_glitch", "real_glitch")
 LABELS = {
     "noise": "noise",
     "inj_ccsn": "injected CCSN",
@@ -70,10 +77,10 @@ LABELS = {
     "real_glitch": "real blip",
 }
 COLORS = {
-    "inj_ccsn": "#0072B2",       # Okabe--Ito blue
-    "noise": "#666666",          # neutral reference
-    "inj_glitch": "#E69F00",     # Okabe--Ito orange
-    "real_glitch": "#D55E00",    # Okabe--Ito vermillion
+    "inj_ccsn": "#0072B2",  # Okabe--Ito blue
+    "noise": "#666666",  # neutral reference
+    "inj_glitch": "#E69F00",  # Okabe--Ito orange
+    "real_glitch": "#D55E00",  # Okabe--Ito vermillion
 }
 
 MARKERS = {
@@ -110,9 +117,16 @@ def load_run(outdir: Path) -> Optional[Dict[str, dict]]:
         }
         if base:
             out[c]["new_snr"] = np.array(
-                [base.get((c, int(r["index"])), np.nan) for r in sub], dtype=float)
+                [base.get((c, int(r["index"])), np.nan) for r in sub],
+                dtype=float,
+            )
     out["_has_baseline"] = bool(base)
     out["_n"] = len(rows)
+    out["_background_classes"] = [
+        c
+        for c in ("noise", "inj_glitch", "real_glitch")
+        if out[c]["log_odds"].size
+    ]
     return out
 
 
@@ -125,7 +139,9 @@ def _roc_curve(pos: np.ndarray, neg: np.ndarray):
     pos = pos[np.isfinite(pos)]
     neg = neg[np.isfinite(neg)]
     scores = np.concatenate([pos, neg])
-    is_pos = np.concatenate([np.ones(pos.size, bool), np.zeros(neg.size, bool)])
+    is_pos = np.concatenate(
+        [np.ones(pos.size, bool), np.zeros(neg.size, bool)]
+    )
     order = np.argsort(-scores, kind="stable")
     scores, is_pos = scores[order], is_pos[order]
     tpr = np.cumsum(is_pos) / pos.size
@@ -135,7 +151,7 @@ def _roc_curve(pos: np.ndarray, neg: np.ndarray):
 
 
 def _background(run: dict, key: str) -> np.ndarray:
-    return np.concatenate([run[c][key] for c in BACKGROUND])
+    return np.concatenate([run[c][key] for c in run["_background_classes"]])
 
 
 def _roc_band(pos, neg, pos_idx, neg_idx, fap_grid, n_boot=400, seed=0):
@@ -147,8 +163,10 @@ def _roc_band(pos, neg, pos_idx, neg_idx, fap_grid, n_boot=400, seed=0):
     background yields big discrete steps that read as artefacts, so we show the
     bootstrap median and central 68% interval instead.
     """
-    m = np.isfinite(pos); pos, pos_idx = pos[m], pos_idx[m]
-    m = np.isfinite(neg); neg, neg_idx = neg[m], neg_idx[m]
+    m = np.isfinite(pos)
+    pos, pos_idx = pos[m], pos_idx[m]
+    m = np.isfinite(neg)
+    neg, neg_idx = neg[m], neg_idx[m]
     pos_by = {e: pos[pos_idx == e] for e in np.unique(pos_idx)}
     neg_by = {e: neg[neg_idx == e] for e in np.unique(neg_idx)}
     events = np.unique(np.concatenate([pos_idx, neg_idx]))
@@ -168,26 +186,43 @@ def _roc_band(pos, neg, pos_idx, neg_idx, fap_grid, n_boot=400, seed=0):
 def fig_roc(runs: Dict[str, dict], out: Path) -> None:
     """ROC on a log false-alarm-probability axis (the low-FAP regime is what a
     search operates in; linear axes hide it). Bootstrap median + 68% band."""
-    fig, axes = plt.subplots(1, len(runs), figsize=(PANEL_W * len(runs), PANEL_H), squeeze=False)
+    fig, axes = plt.subplots(
+        1, len(runs), figsize=(PANEL_W * len(runs), PANEL_H), squeeze=False
+    )
     for ax, (net, run) in zip(axes[0], runs.items()):
         sig_o, sig_s = run["inj_ccsn"]["log_odds"], run["inj_ccsn"]["snr"]
         bg_o, bg_s = _background(run, "log_odds"), _background(run, "snr")
         sig_i, bg_i = run["inj_ccsn"]["index"], _background(run, "index")
-        fap_min = 1.0 / bg_o[np.isfinite(bg_o)].size  # resolution of the background set
+        fap_min = (
+            1.0 / bg_o[np.isfinite(bg_o)].size
+        )  # resolution of the background set
         fap_grid = np.geomspace(fap_min, 1.0, 200)
         curves = [
             (sig_o, bg_o, sig_i, bg_i, "#1b7837", r"$\ln\,\mathcal{O}$"),
             (sig_s, bg_s, sig_i, bg_i, "#762a83", "SNR proxy"),
         ]
         if run.get("_has_baseline"):
-            curves.append((run["inj_ccsn"]["new_snr"], _background(run, "new_snr"),
-                           sig_i, bg_i, "#d95f02", "reweighted SNR"))
+            curves.append(
+                (
+                    run["inj_ccsn"]["new_snr"],
+                    _background(run, "new_snr"),
+                    sig_i,
+                    bg_i,
+                    "#d95f02",
+                    "reweighted SNR",
+                )
+            )
         for sig, bg, si, bi, color, name in curves:
             med, lo, hi = _roc_band(sig, bg, si, bi, fap_grid)
             auc, err = _roc_auc(sig, bg), _boot_auc_err(sig, bg, si, bi)
             ax.fill_between(fap_grid, lo, hi, color=color, alpha=0.18, lw=0)
-            ax.plot(fap_grid, med, color=color, lw=1.7,
-                    label=rf"{name}  (AUC $= {auc:.3f} \pm {err:.3f}$)")
+            ax.plot(
+                fap_grid,
+                med,
+                color=color,
+                lw=1.7,
+                label=rf"{name}  (AUC $= {auc:.3f} \pm {err:.3f}$)",
+            )
         ax.plot(fap_grid, fap_grid, ls=":", color="k", lw=0.8, alpha=0.6)
         ax.set_xscale("log")
         ax.set_xlabel("false-alarm probability")
@@ -213,7 +248,9 @@ def fig_odds_vs_snr(runs: Dict[str, dict], out: Path) -> None:
     def binned_summary(ax, snr, odds, edges, color, marker):
         centers, medians, lower, upper = [], [], [], []
         for lo, hi in zip(edges[:-1], edges[1:]):
-            select = (snr >= lo) & (snr < hi) & np.isfinite(snr) & np.isfinite(odds)
+            select = (
+                (snr >= lo) & (snr < hi) & np.isfinite(snr) & np.isfinite(odds)
+            )
             if select.sum() < 5:
                 continue
             values = odds[select]
@@ -239,13 +276,25 @@ def fig_odds_vs_snr(runs: Dict[str, dict], out: Path) -> None:
         )
 
     fig, axes = plt.subplots(
-        len(runs), 2, figsize=(7.05, 4.55), sharey=True, squeeze=False,
+        len(runs),
+        2,
+        figsize=(7.05, 4.55),
+        sharey=True,
+        squeeze=False,
     )
     panel_letters = "abcdefghijklmnopqrstuvwxyz"
     injection_edges = np.array([10, 14, 18, 22, 26, 30, 34, 40.01])
     catalogue_edges = np.array([12, 16, 22, 30, 45, 70, 110, 190])
     y_ticks = [-600, -100, -10, 0, 10, 100, 600]
-    y_ticklabels = [r"$-600$", r"$-100$", r"$-10$", "$0$", "$10$", "$100$", "$600$"]
+    y_ticklabels = [
+        r"$-600$",
+        r"$-100$",
+        r"$-10$",
+        "$0$",
+        "$10$",
+        "$100$",
+        "$600$",
+    ]
 
     for row, (net, run) in enumerate(runs.items()):
         display_net = "H1-L1" if net == "H1L1" else net
@@ -254,15 +303,15 @@ def fig_odds_vs_snr(runs: Dict[str, dict], out: Path) -> None:
         noise_lo, noise_hi = np.percentile(noise, [5, 95])
 
         for col, ax in enumerate(axes[row]):
-            ax.axhspan(noise_lo, noise_hi, color="#BDBDBD", alpha=0.5,
-                       lw=0, zorder=0)
+            ax.axhspan(
+                noise_lo, noise_hi, color="#BDBDBD", alpha=0.5, lw=0, zorder=0
+            )
             ax.axhline(0, color="#333333", ls="--", lw=0.9, zorder=2)
             ax.set_yscale("symlog", linthresh=10, linscale=0.8)
             ax.set_ylim(-800, 700)
             ax.set_yticks(y_ticks)
             ax.set_yticklabels(y_ticklabels)
-            ax.grid(axis="y", color="#D9D9D9", lw=0.5, alpha=0.75,
-                    zorder=-1)
+            ax.grid(axis="y", color="#D9D9D9", lw=0.5, alpha=0.75, zorder=-1)
             ax.tick_params(length=3, width=0.7)
             panel = 2 * row + col
             panel_kind = "injections" if col == 0 else "catalogued blips"
@@ -272,29 +321,54 @@ def fig_odds_vs_snr(runs: Dict[str, dict], out: Path) -> None:
             )
 
         ax_inj, ax_real = axes[row]
-        for c in ("inj_ccsn", "inj_glitch"):
+        injection_classes = [
+            c for c in ("inj_ccsn", "inj_glitch") if run[c]["snr"].size
+        ]
+        for c in injection_classes:
             snr, odds = run[c]["snr"], run[c]["log_odds"]
             finite = np.isfinite(snr) & np.isfinite(odds)
             ax_inj.scatter(
-                snr[finite], odds[finite], s=5, marker=MARKERS[c],
-                color=COLORS[c], edgecolors="none", alpha=0.12,
-                rasterized=True, zorder=1,
+                snr[finite],
+                odds[finite],
+                s=5,
+                marker=MARKERS[c],
+                color=COLORS[c],
+                edgecolors="none",
+                alpha=0.12,
+                rasterized=True,
+                zorder=1,
             )
             binned_summary(
-                ax_inj, snr, odds, injection_edges, COLORS[c], MARKERS[c],
+                ax_inj,
+                snr,
+                odds,
+                injection_edges,
+                COLORS[c],
+                MARKERS[c],
             )
 
         snr = run["real_glitch"]["snr"]
         odds = run["real_glitch"]["log_odds"]
         finite = np.isfinite(snr) & np.isfinite(odds)
         ax_real.scatter(
-            snr[finite], odds[finite], s=7, marker=MARKERS["real_glitch"],
-            facecolors="none", edgecolors=COLORS["real_glitch"],
-            linewidths=0.45, alpha=0.22, rasterized=True, zorder=1,
+            snr[finite],
+            odds[finite],
+            s=7,
+            marker=MARKERS["real_glitch"],
+            facecolors="none",
+            edgecolors=COLORS["real_glitch"],
+            linewidths=0.45,
+            alpha=0.22,
+            rasterized=True,
+            zorder=1,
         )
         binned_summary(
-            ax_real, snr, odds, catalogue_edges,
-            COLORS["real_glitch"], MARKERS["real_glitch"],
+            ax_real,
+            snr,
+            odds,
+            catalogue_edges,
+            COLORS["real_glitch"],
+            MARKERS["real_glitch"],
         )
 
         ax_inj.set_xlim(9, 41)
@@ -308,22 +382,61 @@ def fig_odds_vs_snr(runs: Dict[str, dict], out: Path) -> None:
     axes[-1, 1].set_xlabel("Gravity Spy catalogue SNR")
 
     handles = [
-        Line2D([], [], marker=MARKERS["inj_ccsn"], ls="none", ms=5,
-               color=COLORS["inj_ccsn"], label=LABELS["inj_ccsn"]),
-        Line2D([], [], marker=MARKERS["inj_glitch"], ls="none", ms=5,
-               color=COLORS["inj_glitch"], label=LABELS["inj_glitch"]),
-        Line2D([], [], marker=MARKERS["real_glitch"], ls="none", ms=5,
-               markerfacecolor="none", markeredgecolor=COLORS["real_glitch"],
-               label=LABELS["real_glitch"]),
-        Patch(facecolor="#BDBDBD", edgecolor="none", alpha=0.6,
-              label="noise central 90%"),
+        Line2D(
+            [],
+            [],
+            marker=MARKERS["inj_ccsn"],
+            ls="none",
+            ms=5,
+            color=COLORS["inj_ccsn"],
+            label=LABELS["inj_ccsn"],
+        ),
+        Line2D(
+            [],
+            [],
+            marker=MARKERS["real_glitch"],
+            ls="none",
+            ms=5,
+            markerfacecolor="none",
+            markeredgecolor=COLORS["real_glitch"],
+            label=LABELS["real_glitch"],
+        ),
+        Patch(
+            facecolor="#BDBDBD",
+            edgecolor="none",
+            alpha=0.6,
+            label="noise central 90%",
+        ),
     ]
-    fig.legend(handles=handles, loc="upper center", bbox_to_anchor=(0.5, 1.005),
-               ncol=4, frameon=False, fontsize=8, numpoints=1, handlelength=1.2,
-               handletextpad=0.4, columnspacing=0.8)
+    if any(run["inj_glitch"]["snr"].size for run in runs.values()):
+        handles.insert(
+            1,
+            Line2D(
+                [],
+                [],
+                marker=MARKERS["inj_glitch"],
+                ls="none",
+                ms=5,
+                color=COLORS["inj_glitch"],
+                label=LABELS["inj_glitch"],
+            ),
+        )
+    fig.legend(
+        handles=handles,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 1.005),
+        ncol=len(handles),
+        frameon=False,
+        fontsize=8,
+        numpoints=1,
+        handlelength=1.2,
+        handletextpad=0.4,
+        columnspacing=0.8,
+    )
     fig.supylabel(r"log Bayesian odds, $\ln\mathcal{O}$", x=0.008)
-    fig.subplots_adjust(left=0.10, right=0.995, bottom=0.11, top=0.89,
-                        hspace=0.35, wspace=0.17)
+    fig.subplots_adjust(
+        left=0.10, right=0.995, bottom=0.11, top=0.89, hspace=0.35, wspace=0.17
+    )
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
 
@@ -337,7 +450,9 @@ def _wilson(k: int, n: int, z: float = 1.0):
     return center - half, center + half
 
 
-def fig_efficiency(runs: Dict[str, dict], out: Path, far: float = 0.05) -> None:
+def fig_efficiency(
+    runs: Dict[str, dict], out: Path, far: float = 0.05
+) -> None:
     """Odds-ranked detection efficiency vs injected SNR at fixed FAP."""
     fig, ax = plt.subplots(figsize=(3.4, 2.45))
     edges = np.array([0, 8, 12, 16, 24, 32, 48, 100], dtype=float)
@@ -355,7 +470,11 @@ def fig_efficiency(runs: Dict[str, dict], out: Path, far: float = 0.05) -> None:
         sig_val = run["inj_ccsn"][score]
         eff, lo, hi, xs = [], [], [], []
         for i in range(len(edges) - 1):
-            m = (sig_snr >= edges[i]) & (sig_snr < edges[i + 1]) & np.isfinite(sig_val)
+            m = (
+                (sig_snr >= edges[i])
+                & (sig_snr < edges[i + 1])
+                & np.isfinite(sig_val)
+            )
             if m.sum() >= 3:
                 k, n = int((sig_val[m] >= thr).sum()), int(m.sum())
                 eff.append(k / n)
@@ -367,8 +486,17 @@ def fig_efficiency(runs: Dict[str, dict], out: Path, far: float = 0.05) -> None:
         yerr = np.clip([eff - lo, hi - eff], 0, None)
         style = network_styles.get(net, {})
         label = "H1-L1" if net == "H1L1" else net
-        ax.errorbar(xs, eff, yerr=yerr, ms=4, capsize=2, label=label,
-                    markerfacecolor="white", markeredgewidth=0.9, **style)
+        ax.errorbar(
+            xs,
+            eff,
+            yerr=yerr,
+            ms=4,
+            capsize=2,
+            label=label,
+            markerfacecolor="white",
+            markeredgewidth=0.9,
+            **style,
+        )
     ax.set_xlabel("injected network SNR")
     ax.set_ylabel(f"detection efficiency ({far:.0%} FAP)")
     ax.set_ylim(0.7, 1.0)
@@ -383,61 +511,116 @@ def write_table(runs: Dict[str, dict], out: Path) -> None:
     lines = [
         r"\begin{tabular}{l" + "c" * len(runs) + "}",
         r"\hline",
-        "metric & " + " & ".join(
-            "H1--L1" if key == "H1L1" else key for key in runs
-        ) + r" \\",
+        "metric & "
+        + " & ".join("H1--L1" if key == "H1L1" else key for key in runs)
+        + r" \\",
         r"\hline",
     ]
 
     def row(name, fn, fmt="{:.3f}"):
-        return f"{name} & " + " & ".join(fmt.format(fn(r)) for r in runs.values()) + r" \\"
+        return (
+            f"{name} & "
+            + " & ".join(fmt.format(fn(r)) for r in runs.values())
+            + r" \\"
+        )
 
     def auc_row(name, fg_key, bg_fn, bg_idx_fn):
         r"""AUC row with a block-bootstrap standard error: 0.975 \pm 0.004."""
+
         def cell(r):
             fg, bg = r["inj_ccsn"][fg_key], bg_fn(r)
             err = _boot_auc_err(fg, bg, r["inj_ccsn"]["index"], bg_idx_fn(r))
             return f"${_roc_auc(fg, bg):.3f} \\pm {err:.3f}$"
 
-        return f"{name} & " + " & ".join(cell(r) for r in runs.values()) + r" \\"
+        return (
+            f"{name} & " + " & ".join(cell(r) for r in runs.values()) + r" \\"
+        )
 
     lines += [
         row("$N$ events", lambda r: r["_n"], "{:d}"),
-        auc_row(r"AUC$_{\ln\mathcal{O}}$ (all bkg.)",
-                "log_odds", lambda r: _background(r, "log_odds"), lambda r: _background(r, "index")),
-        auc_row("AUC$_{\\rm loudness}$ (all bkg.)",
-                "snr", lambda r: _background(r, "snr"), lambda r: _background(r, "index")),
+        auc_row(
+            r"AUC$_{\ln\mathcal{O}}$ (all bkg.)",
+            "log_odds",
+            lambda r: _background(r, "log_odds"),
+            lambda r: _background(r, "index"),
+        ),
+        auc_row(
+            "AUC$_{\\rm loudness}$ (all bkg.)",
+            "snr",
+            lambda r: _background(r, "snr"),
+            lambda r: _background(r, "index"),
+        ),
     ]
     # Reweighted-SNR baseline (chisq_baseline.py): the consistently-evaluated
     # search statistic. Only emitted when every run has the baseline JSONs.
     if all(r.get("_has_baseline") for r in runs.values()):
         lines += [
-            auc_row(r"AUC$_{\rm newSNR}$ (all bkg.)",
-                    "new_snr", lambda r: _background(r, "new_snr"), lambda r: _background(r, "index")),
-            auc_row(r"AUC$_{\rm newSNR}$ (real blip)",
-                    "new_snr", lambda r: r["real_glitch"]["new_snr"], lambda r: r["real_glitch"]["index"]),
+            auc_row(
+                r"AUC$_{\rm newSNR}$ (all bkg.)",
+                "new_snr",
+                lambda r: _background(r, "new_snr"),
+                lambda r: _background(r, "index"),
+            ),
+            auc_row(
+                r"AUC$_{\rm newSNR}$ (real blip)",
+                "new_snr",
+                lambda r: r["real_glitch"]["new_snr"],
+                lambda r: r["real_glitch"]["index"],
+            ),
         ]
     lines += [
-        auc_row(r"AUC$_{\ln\mathcal{O}}$ (noise)",
-                "log_odds", lambda r: r["noise"]["log_odds"], lambda r: r["noise"]["index"]),
-        auc_row(r"AUC$_{\ln\mathcal{O}}$ (inj.\ blip)",
-                "log_odds", lambda r: r["inj_glitch"]["log_odds"], lambda r: r["inj_glitch"]["index"]),
-        auc_row(r"AUC$_{\ln\mathcal{O}}$ (real blip)",
-                "log_odds", lambda r: r["real_glitch"]["log_odds"], lambda r: r["real_glitch"]["index"]),
-        row("real glitch misclass.\\ rate",
-            lambda r: (r["real_glitch"]["log_odds"] > 0).mean()),
-        row("signal missed rate",
-            lambda r: (r["inj_ccsn"]["log_odds"] < 0).mean()),
-        r"\hline",
-        r"\end{tabular}",
+        auc_row(
+            r"AUC$_{\ln\mathcal{O}}$ (noise)",
+            "log_odds",
+            lambda r: r["noise"]["log_odds"],
+            lambda r: r["noise"]["index"],
+        ),
+        auc_row(
+            r"AUC$_{\ln\mathcal{O}}$ (real blip)",
+            "log_odds",
+            lambda r: r["real_glitch"]["log_odds"],
+            lambda r: r["real_glitch"]["index"],
+        ),
+        row(
+            "real glitch misclass.\\ rate",
+            lambda r: (r["real_glitch"]["log_odds"] > 0).mean(),
+        ),
+        row(
+            "signal missed rate",
+            lambda r: (r["inj_ccsn"]["log_odds"] < 0).mean(),
+        ),
     ]
+    if all(r["inj_glitch"]["log_odds"].size for r in runs.values()):
+        lines.insert(
+            -3,
+            auc_row(
+                r"AUC$_{\ln\mathcal{O}}$ (inj.\ blip)",
+                "log_odds",
+                lambda r: r["inj_glitch"]["log_odds"],
+                lambda r: r["inj_glitch"]["index"],
+            ),
+        )
+    lines += [r"\hline", r"\end{tabular}"]
     out.write_text("\n".join(lines))
 
 
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--l1", type=Path, default=None, help="Single-detector run dir (rn_L1).")
-    p.add_argument("--h1l1", type=Path, default=None, help="Two-detector run dir (rn_H1_L1).")
+    p.add_argument(
+        "--l1",
+        type=Path,
+        default=None,
+        help="Single-detector run dir (rn_L1).",
+    )
+    p.add_argument(
+        "--h1", type=Path, default=None, help="Single-detector H1 run dir."
+    )
+    p.add_argument(
+        "--h1l1",
+        type=Path,
+        default=None,
+        help="Two-detector run dir (rn_H1_L1).",
+    )
     p.add_argument("--outdir", type=Path, default=Path("out_rn_figs"))
     args = p.parse_args()
 
@@ -446,12 +629,18 @@ def main() -> None:
         r = load_run(args.l1)
         if r:
             runs["L1"] = r
+    if args.h1 is not None:
+        r = load_run(args.h1)
+        if r:
+            runs["H1"] = r
     if args.h1l1 is not None:
         r = load_run(args.h1l1)
         if r:
             runs["H1L1"] = r
     if not runs:
-        raise SystemExit("No result JSONs found in the given --l1 / --h1l1 dirs.")
+        raise SystemExit(
+            "No result JSONs found in the given --l1 / --h1 / --h1l1 dirs."
+        )
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     fig_roc(runs, args.outdir / "fig_roc.pdf")
@@ -459,11 +648,15 @@ def main() -> None:
     fig_efficiency(runs, args.outdir / "fig_efficiency.pdf")
     write_table(runs, args.outdir / "summary_table.tex")
 
-    print(f"Wrote figures + table to {args.outdir}/ for networks: {', '.join(runs)}")
+    print(
+        f"Wrote figures + table to {args.outdir}/ for networks: {', '.join(runs)}"
+    )
     for net, r in runs.items():
         auc_o = _roc_auc(r["inj_ccsn"]["log_odds"], _background(r, "log_odds"))
         auc_s = _roc_auc(r["inj_ccsn"]["snr"], _background(r, "snr"))
-        print(f"  {net}: N={r['_n']}  AUC(odds)={auc_o:.3f}  AUC(SNR)={auc_s:.3f}")
+        print(
+            f"  {net}: N={r['_n']}  AUC(odds)={auc_o:.3f}  AUC(SNR)={auc_s:.3f}"
+        )
 
 
 if __name__ == "__main__":
