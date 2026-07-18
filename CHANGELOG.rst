@@ -5,6 +5,33 @@ CHANGELOG
 =========
 
 
+Unreleased
+==========
+
+NUTS initialization
+-------------------
+
+* Add a fast Sobol multistart MAP initializer for the Starccato latent
+  posterior. The default NUTS and BCR workflows now screen 128 prior-scaled
+  latent starts, refine the four highest-density distinct basins, and pass the
+  best point to NumPyro's ``init_to_value`` strategy.
+* Persist every optimization attempt and clustered-basin diagnostic in
+  ``map_initialization.json``. The workflow warns when the winning basin was
+  reached by only one broad start or when a secondary basin lies within five
+  log-density units. These checks diagnose, but do not eliminate, posterior
+  multimodality.
+* For multi-chain runs, initialize NUTS chains across all screened basins
+  within five log-density units of the best solution (round-robin when there
+  are more chains than basins). CCSNE chains use one compiled vectorized
+  sampler; the longer-running blip likelihood uses the memory-safer sequential
+  chain map. Persistent mode separation therefore becomes a visible
+  cross-chain diagnostic.
+* Require at least two chains in high-level NUTS workflows. Abort before any
+  morphZ or fallback evidence calculation when the maximum R-hat exceeds 1.05,
+  no finite R-hat is available, or any divergence is present. Values above
+  1.01 remain a publication-quality warning.
+
+
 .. _changelog-v0.0.3:
 
 v0.0.3 (2026-07-01)

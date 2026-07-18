@@ -39,6 +39,8 @@ class AnalysisConfig:
     num_warmup: int
     num_samples: int
     num_chains: int
+    target_accept_prob: float
+    max_tree_depth: int
     signal_latent_sigma: float
     signal_log_amp_sigma: float
     glitch_latent_sigma: float
@@ -71,6 +73,8 @@ def load_analysis_config(path: Path) -> AnalysisConfig:
         num_warmup=int(sampler_cfg["num_warmup"]),
         num_samples=int(sampler_cfg["num_samples"]),
         num_chains=int(sampler_cfg["num_chains"]),
+        target_accept_prob=float(sampler_cfg.get("target_accept_prob", 0.8)),
+        max_tree_depth=int(sampler_cfg.get("max_tree_depth", 10)),
         signal_latent_sigma=float(priors_sig["latent_sigma"]),
         signal_log_amp_sigma=float(priors_sig["log_amp_sigma"]),
         glitch_latent_sigma=float(priors_glitch["latent_sigma"]),
@@ -345,6 +349,8 @@ def run_event_workflow(
             num_samples=cfg.num_samples,
             num_warmup=cfg.num_warmup,
             num_chains=cfg.num_chains,
+            target_accept_prob=cfg.target_accept_prob,
+            max_tree_depth=cfg.max_tree_depth,
             rng_seed=idx,
             save_artifacts=cfg.save_artifacts,
             ci=cfg.ci,
