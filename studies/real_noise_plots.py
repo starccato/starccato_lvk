@@ -139,15 +139,43 @@ def _background(run: dict, key: str) -> np.ndarray:
     return np.concatenate([run[c][key] for c in BACKGROUND])
 
 
+def _roc_band(pos, neg, pos_idx, neg_idx, fap_grid, n_boot=400, seed=0):
+    """Block-bootstrap ROC as (median, lo, hi) detection efficiency on fap_grid.
+
+    Resamples whole events (the four classes at a trigger share a segment), draws
+    the exact ROC each time and evaluates it on a common false-alarm grid. The
+    band replaces the raw staircase: a near-perfect classifier on a finite
+    background yields big discrete steps that read as artefacts, so we show the
+    bootstrap median and central 68% interval instead.
+    """
+    m = np.isfinite(pos); pos, pos_idx = pos[m], pos_idx[m]
+    m = np.isfinite(neg); neg, neg_idx = neg[m], neg_idx[m]
+    pos_by = {e: pos[pos_idx == e] for e in np.unique(pos_idx)}
+    neg_by = {e: neg[neg_idx == e] for e in np.unique(neg_idx)}
+    events = np.unique(np.concatenate([pos_idx, neg_idx]))
+    rng = np.random.default_rng(seed)
+    empty = np.empty(0)
+    tprs = []
+    for _ in range(n_boot):
+        pick = rng.choice(events, events.size, replace=True)
+        p = np.concatenate([pos_by.get(e, empty) for e in pick])
+        n = np.concatenate([neg_by.get(e, empty) for e in pick])
+        if p.size and n.size:
+            fpr, tpr = _roc_curve(p, n)
+            tprs.append(np.interp(fap_grid, fpr, tpr))
+    return np.percentile(np.asarray(tprs), [50, 16, 84], axis=0)
+
+
 def fig_roc(runs: Dict[str, dict], out: Path) -> None:
     """ROC on a log false-alarm-probability axis (the low-FAP regime is what a
-    search operates in; linear axes hide it)."""
+    search operates in; linear axes hide it). Bootstrap median + 68% band."""
     fig, axes = plt.subplots(1, len(runs), figsize=(PANEL_W * len(runs), PANEL_H), squeeze=False)
     for ax, (net, run) in zip(axes[0], runs.items()):
         sig_o, sig_s = run["inj_ccsn"]["log_odds"], run["inj_ccsn"]["snr"]
         bg_o, bg_s = _background(run, "log_odds"), _background(run, "snr")
         sig_i, bg_i = run["inj_ccsn"]["index"], _background(run, "index")
         fap_min = 1.0 / bg_o[np.isfinite(bg_o)].size  # resolution of the background set
+        fap_grid = np.geomspace(fap_min, 1.0, 200)
         curves = [
             (sig_o, bg_o, sig_i, bg_i, "#1b7837", r"$\ln\,\mathcal{O}$"),
             (sig_s, bg_s, sig_i, bg_i, "#762a83", "SNR proxy"),
@@ -156,19 +184,19 @@ def fig_roc(runs: Dict[str, dict], out: Path) -> None:
             curves.append((run["inj_ccsn"]["new_snr"], _background(run, "new_snr"),
                            sig_i, bg_i, "#d95f02", "reweighted SNR"))
         for sig, bg, si, bi, color, name in curves:
-            fpr, tpr = _roc_curve(sig, bg)
+            med, lo, hi = _roc_band(sig, bg, si, bi, fap_grid)
             auc, err = _roc_auc(sig, bg), _boot_auc_err(sig, bg, si, bi)
-            ax.plot(np.clip(fpr, fap_min, None), tpr, drawstyle="steps-post", color=color,
+            ax.fill_between(fap_grid, lo, hi, color=color, alpha=0.18, lw=0)
+            ax.plot(fap_grid, med, color=color, lw=1.7,
                     label=rf"{name}  (AUC $= {auc:.3f} \pm {err:.3f}$)")
-        diag = np.geomspace(fap_min, 1.0, 50)
-        ax.plot(diag, diag, ls=":", color="k", lw=0.8, alpha=0.6)
+        ax.plot(fap_grid, fap_grid, ls=":", color="k", lw=0.8, alpha=0.6)
         ax.set_xscale("log")
         ax.set_xlabel("false-alarm probability")
         ax.set_ylabel("detection efficiency")
         ax.set_title("H1-L1" if net == "H1L1" else net)
         ax.set_xlim(fap_min, 1)
         ax.set_ylim(0, 1.02)
-        ax.legend(loc="upper left", frameon=False)
+        ax.legend(loc="lower right", frameon=False)
     fig.tight_layout()
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
