@@ -36,7 +36,8 @@ DETECTORS=${DETECTORS:?set DETECTORS to H1, L1, or "H1 L1"}
 REPO_ROOT=${SLURM_SUBMIT_DIR:-$PWD}
 VENV=${VENV:-/fred/oz303/avajpeyi/codes/starccato_lvk/.venv}
 RESULTS_ROOT=${RESULTS_ROOT:-/fred/oz303/avajpeyi/results/starccato_lvk}
-INDEX=${SLURM_ARRAY_TASK_ID:-0}
+# INDEX_OFFSET keeps array values < MaxArraySize for catalogues > ~1000 events.
+INDEX=$(( ${SLURM_ARRAY_TASK_ID:-0} + ${INDEX_OFFSET:-0} ))
 STAGE=${STAGE:-analysis}
 CLASS=${CLASS:-}
 BLIP_IFO=${BLIP_IFO:-L1}

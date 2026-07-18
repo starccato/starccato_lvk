@@ -45,13 +45,15 @@ submit an index past the selected catalogue length.
 
 ## 3. Run a pilot
 
-The submission helper launches three preparation arrays and nine analysis
-arrays, one class per task. Outputs default to
+`submit_campaign.sh` is the single entrypoint. It scans the campaign directory
+for existing manifests and result JSONs and submits only the missing work —
+one prep array per cohort plus one analysis array per event class, one class
+per task. Outputs default to
 `/fred/oz303/avajpeyi/results/starccato_lvk/<CAMPAIGN_ID>` and never enter Git.
 
 ```bash
-N_EVENTS=2 MAX_CONCURRENT=1 \
-  slurm/submit_nuts_morphlnz.sh nuts_morphlnz_v040_20260718
+N_EVENTS=20 THROTTLE=5 CAMPAIGN_ID=nuts_morphlnz_v040_pilot \
+  bash slurm/submit_campaign.sh
 ```
 
 Inspect resource use and failures after the pilot:
@@ -69,22 +71,29 @@ the event's `analysis/` directory and writes a failure JSON.
 
 ## 4. Scale
 
-For 250 catalogue indices, the nine analysis cohorts produce 2,250 analysis
-tasks plus 750 preparation tasks:
+The full campaign is simply the same command without the cap — it runs every
+catalogue index for all four cohorts (L1, H1, H1+L1 with L1 blips, H1+L1 with
+H1 blips) and skips whatever the pilot or earlier submissions already
+completed:
 
 ```bash
-N_EVENTS=250 MAX_CONCURRENT=10 \
-  slurm/submit_nuts_morphlnz.sh nuts_morphlnz_v040_20260718
+CAMPAIGN_ID=nuts_morphlnz_v040_20260718 bash slurm/submit_campaign.sh
 ```
+
+Re-run the same command after failures: it resubmits only indices without a
+result JSON. Failed classes keep their bundles, diagnostics directory, and a
+failure JSON under `failures/`; successful events are pruned down to their
+manifest and result rows (the newSNR baseline rows are produced in the same
+analysis tasks).
 
 Use a new `CAMPAIGN_ID` whenever code, weights, frequency band, priors, or
 sampler settings change. Matching tasks are idempotent. A stale result or
 manifest causes a hard failure rather than being silently mixed into a new
 campaign.
 
-`MAX_CONCURRENT` is a per-array throttle. There are nine analysis arrays, so a
-value of 10 allows at most 90 analysis tasks to run simultaneously, subject to
-the cluster's own limits.
+`THROTTLE` is a per-array throttle. With three classes and four cohorts there
+are up to twelve analysis arrays, so the default of 50 allows at most 600
+concurrent analysis tasks, subject to the cluster's own limits.
 
 The default main-analysis band is 300--800 Hz. Band sensitivity campaigns must
 use a distinct campaign ID and set `FLOW`/`FMAX` consistently for preparation
