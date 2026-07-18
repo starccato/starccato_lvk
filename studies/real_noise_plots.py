@@ -94,6 +94,13 @@ def load_run(outdir: Path) -> Optional[Dict[str, dict]]:
         rows = [json.loads(Path(f).read_text()) for f in files]
     if not rows:
         return None
+    # Optional reweighted-SNR baseline (chisq_baseline.py): new_snr keyed by
+    # (cls, index) so it aligns to the SAME events as the odds -- events analysed
+    # for odds but not baseline (or vice versa) get NaN and drop from newSNR AUCs.
+    base = {}
+    for f in glob.glob(str(outdir / "results" / "e*_baseline.json")):
+        r = json.loads(Path(f).read_text())
+        base[(r["cls"], int(r["index"]))] = float(r["new_snr"])
     out = {}
     for c in CLASSES:
         sub = [r for r in rows if r["cls"] == c]
@@ -102,6 +109,10 @@ def load_run(outdir: Path) -> Optional[Dict[str, dict]]:
             "snr": np.array([r["snr"] for r in sub], dtype=float),
             "index": np.array([r["index"] for r in sub], dtype=int),
         }
+        if base:
+            out[c]["new_snr"] = np.array(
+                [base.get((c, int(r["index"])), np.nan) for r in sub], dtype=float)
+    out["_has_baseline"] = bool(base)
     out["_n"] = len(rows)
     return out
 
@@ -137,12 +148,16 @@ def fig_roc(runs: Dict[str, dict], out: Path) -> None:
         bg_o, bg_s = _background(run, "log_odds"), _background(run, "snr")
         sig_i, bg_i = run["inj_ccsn"]["index"], _background(run, "index")
         fap_min = 1.0 / bg_o[np.isfinite(bg_o)].size  # resolution of the background set
-        for sig, bg, color, name in (
-            (sig_o, bg_o, "#1b7837", r"$\ln\,\mathcal{O}$"),
-            (sig_s, bg_s, "#762a83", "SNR proxy"),
-        ):
+        curves = [
+            (sig_o, bg_o, sig_i, bg_i, "#1b7837", r"$\ln\,\mathcal{O}$"),
+            (sig_s, bg_s, sig_i, bg_i, "#762a83", "SNR proxy"),
+        ]
+        if run.get("_has_baseline"):
+            curves.append((run["inj_ccsn"]["new_snr"], _background(run, "new_snr"),
+                           sig_i, bg_i, "#d95f02", "reweighted SNR"))
+        for sig, bg, si, bi, color, name in curves:
             fpr, tpr = _roc_curve(sig, bg)
-            auc, err = _roc_auc(sig, bg), _boot_auc_err(sig, bg, sig_i, bg_i)
+            auc, err = _roc_auc(sig, bg), _boot_auc_err(sig, bg, si, bi)
             ax.plot(np.clip(fpr, fap_min, None), tpr, drawstyle="steps-post", color=color,
                     label=rf"{name}  (AUC $= {auc:.3f} \pm {err:.3f}$)")
         diag = np.geomspace(fap_min, 1.0, 50)
@@ -387,6 +402,17 @@ def write_table(runs: Dict[str, dict], out: Path) -> None:
                 "log_odds", lambda r: _background(r, "log_odds"), lambda r: _background(r, "index")),
         auc_row("AUC$_{\\rm loudness}$ (all bkg.)",
                 "snr", lambda r: _background(r, "snr"), lambda r: _background(r, "index")),
+    ]
+    # Reweighted-SNR baseline (chisq_baseline.py): the consistently-evaluated
+    # search statistic. Only emitted when every run has the baseline JSONs.
+    if all(r.get("_has_baseline") for r in runs.values()):
+        lines += [
+            auc_row(r"AUC$_{\rm newSNR}$ (all bkg.)",
+                    "new_snr", lambda r: _background(r, "new_snr"), lambda r: _background(r, "index")),
+            auc_row(r"AUC$_{\rm newSNR}$ (real blip)",
+                    "new_snr", lambda r: r["real_glitch"]["new_snr"], lambda r: r["real_glitch"]["index"]),
+        ]
+    lines += [
         auc_row(r"AUC$_{\ln\mathcal{O}}$ (noise)",
                 "log_odds", lambda r: r["noise"]["log_odds"], lambda r: r["noise"]["index"]),
         auc_row(r"AUC$_{\ln\mathcal{O}}$ (inj.\ blip)",

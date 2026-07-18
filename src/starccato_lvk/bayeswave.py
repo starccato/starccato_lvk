@@ -409,6 +409,20 @@ def parse_evidence(path: Path) -> dict[str, tuple[float, float]]:
     return evidence
 
 
+def _evidence_complete(path: Path) -> bool:
+    """True iff evidence.dat exists and holds all three model evidences.
+
+    A run that died during sampling leaves an empty/partial evidence.dat; that
+    file must NOT satisfy the idempotent skip check (it would skip re-sampling
+    forever) nor be carried into post-processing.
+    """
+    try:
+        parse_evidence(path)
+        return True
+    except (FileNotFoundError, ValueError, OSError):
+        return False
+
+
 def _stats_row(path: Path) -> dict[str, float] | None:
     if not path.is_file():
         return None
@@ -502,18 +516,26 @@ def _resolve_executable(value: str) -> str:
     return resolved
 
 
-def _run(command: Sequence[str], cwd: Path, log_name: str) -> None:
+# BayesWave checkpoints and exits with this code when it reaches its time budget,
+# expecting to be re-invoked to resume from the checkpoint (it does NOT restart).
+BAYESWAVE_CHECKPOINT_EXIT = 77
+
+
+def _run(command: Sequence[str], cwd: Path, log_name: str, check: bool = True) -> int:
     log_path = cwd / log_name
     with log_path.open("a") as log:
         log.write(f"$ {shlex.join(command)}\n")
         log.flush()
-        subprocess.run(
+        proc = subprocess.run(
             list(command),
             cwd=cwd,
             stdout=log,
             stderr=subprocess.STDOUT,
-            check=True,
+            check=False,
         )
+    if check and proc.returncode != 0:
+        raise subprocess.CalledProcessError(proc.returncode, list(command))
+    return proc.returncode
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -530,6 +552,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--chains", type=int, default=20)
     parser.add_argument("--threads", type=int, default=4)
     parser.add_argument("--seed", type=int, default=1234)
+    parser.add_argument(
+        "--max-resumes", type=int, default=50,
+        help="Max in-job BayesWave resumes on checkpoint-exit (code 77) before "
+             "giving up (a job resubmit continues from the checkpoint regardless).",
+    )
     parser.add_argument(
         "--sample-rate",
         type=float,
@@ -665,16 +692,38 @@ def main(argv: Sequence[str] | None = None) -> int:
     evidence_path = output_dir / "evidence.dat"
     sampling_elapsed = 0.0
     post_elapsed = 0.0
-    if not evidence_path.is_file():
+    # Resample when there is no COMPLETE evidence.dat: a partial file from a run
+    # that died/checkpointed mid-sampling must not satisfy the skip check (it
+    # would skip re-sampling forever). Each _run resumes from the checkpoint;
+    # BayesWave exits 77 when it checkpoints at a time budget, so we re-invoke
+    # to continue until it finishes (exit 0 + complete evidence.dat) -- if the
+    # budget is the SLURM wall, the resume is killed and a job resubmit continues.
+    if not _evidence_complete(evidence_path):
         started = time.perf_counter()
-        _run(run_command, output_dir, "bayeswave.log")
+        for attempt in range(1, args.max_resumes + 1):
+            code = _run(run_command, output_dir, "bayeswave.log", check=False)
+            if _evidence_complete(evidence_path):
+                break
+            if code == BAYESWAVE_CHECKPOINT_EXIT:
+                print(f"BayesWave checkpointed (exit 77); resuming (attempt {attempt}/"
+                      f"{args.max_resumes})", flush=True)
+                continue
+            raise RuntimeError(
+                f"BayesWave exited {code} without a complete evidence.dat at "
+                f"{evidence_path}; inspect bayeswave.log in that directory."
+            )
         sampling_elapsed = time.perf_counter() - started
         metadata["sampling_elapsed_seconds"] = sampling_elapsed
         _write_json(metadata_path, metadata)
     else:
         sampling_elapsed = float(metadata.get("sampling_elapsed_seconds", 0.0))
-    if not evidence_path.is_file():
-        raise RuntimeError(f"BayesWave did not create {evidence_path}")
+    if not _evidence_complete(evidence_path):
+        raise RuntimeError(
+            f"BayesWave still has no complete evidence.dat at {evidence_path} after "
+            f"{args.max_resumes} resume attempts -- it likely hit the SLURM wall. "
+            "Resubmit the job (it resumes from the checkpoint) or raise --time. "
+            "See bayeswave.log."
+        )
     if not args.skip_post:
         signal_stats = output_dir / "post/signal/signal_stats.dat.geo"
         if not signal_stats.is_file():
