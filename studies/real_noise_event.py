@@ -24,6 +24,7 @@ import hashlib
 import importlib.metadata
 import json
 import platform
+import shutil
 import subprocess
 import sys
 import time
@@ -43,6 +44,7 @@ from starccato_lvk.acquisition.io.glitch_catalog import (
     load_blip_glitch_catalog,
 )
 
+from chisq_baseline import run_index as run_baseline_index
 from real_noise_io import build_bundle, inject_into_bundle
 from snr_vs_odds_roc import SAMPLE_RATE
 from snr_vs_odds_roc_coherent import _inject_coherent, _inject_single_glitch
@@ -538,6 +540,38 @@ def analyse_manifest(
         )
 
 
+def prune_completed_index(manifest: dict, outdir: Path) -> None:
+    """Delete an event's bundles and diagnostics once every prepared class has
+    an odds result and a baseline result (inode hygiene on the cluster).
+
+    The manifest and the per-class result JSONs stay. A failed class never
+    prunes: its bundles and diagnostics directory are kept for debugging, and
+    the failure JSON points at them.
+    """
+    index = manifest["index"]
+    classes = manifest["prepared_classes"]
+    results_dir = outdir / "results"
+    complete = all(
+        (results_dir / f"e{index}_{cls}.json").exists()
+        and (results_dir / f"e{index}_{cls}_baseline.json").exists()
+        for cls in classes
+    )
+    if not complete:
+        return
+    edir = outdir / f"e{index}"
+    # ponytail: concurrent per-class tasks may race to prune; rmtree with
+    # ignore_errors is idempotent, so the race is benign.
+    for name in ("noise", "realg", "ccsn", "iglitch"):
+        shutil.rmtree(edir / name, ignore_errors=True)
+    for cls in classes:
+        shutil.rmtree(edir / cls / "analysis", ignore_errors=True)
+        try:
+            (edir / cls).rmdir()
+        except OSError:
+            pass
+    _log(index, "pruned bundles + diagnostics (all classes complete)")
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--index", type=int, required=True)
@@ -584,6 +618,11 @@ def main() -> None:
         help="Immutable campaign identifier stored in manifests and results.",
     )
     p.add_argument("--no-marginal", action="store_true")
+    p.add_argument(
+        "--keep-bundles",
+        action="store_true",
+        help="Skip the post-analysis pruning of bundles and diagnostics.",
+    )
     p.add_argument(
         "--force-prep",
         action="store_true",
@@ -732,6 +771,12 @@ def main() -> None:
             map_num_starts=args.map_num_starts,
             map_maxiter=args.map_maxiter,
         )
+        # newSNR/chi^2 baseline: seconds per class, no sampling. Runs on every
+        # prepared class (skips existing rows), so the last class task to
+        # finish completes the set and prunes the event's heavy files.
+        run_baseline_index(manifest["index"], args.outdir, 128, 8)
+        if not args.keep_bundles:
+            prune_completed_index(manifest, args.outdir)
     _log(args.index, "all stages complete")
 
 

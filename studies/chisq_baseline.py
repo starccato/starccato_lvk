@@ -131,6 +131,8 @@ def run_index(index: int, outdir: Path, n_templates: int, p: int) -> None:
     results_dir.mkdir(parents=True, exist_ok=True)
 
     for cls in CLASSES:
+        if cls not in manifest["bundles"]:
+            continue  # production manifests prepare only 3 of the 4 classes
         out_json = results_dir / f"e{index}_{cls}_baseline.json"
         if out_json.exists():
             continue  # idempotent (SLURM re-runs)
@@ -149,7 +151,9 @@ def run_index(index: int, outdir: Path, n_templates: int, p: int) -> None:
             "mf_snr": float(np.sqrt(sum(v["mf_snr"] ** 2 for v in per_det.values()))),
             "per_det": per_det,
         }
-        out_json.write_text(json.dumps(row, indent=2))
+        tmp = out_json.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(row, indent=2))
+        tmp.replace(out_json)  # atomic: per-class SLURM tasks may race here
         print(f"[e{index} {cls:>11s}] mf_snr={row['mf_snr']:6.2f} new_snr={row['new_snr']:6.2f}")
 
 
