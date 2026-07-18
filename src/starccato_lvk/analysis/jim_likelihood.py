@@ -142,6 +142,7 @@ def find_multistart_map(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: float | None = None,
+    marginalize_amplitude: bool = False,
 ) -> MAPInitializationResult:
     """Find a local posterior mode for NUTS without nested sampling.
 
@@ -194,9 +195,12 @@ def find_multistart_map(
         noise_scale_marginal=noise_scale_marginal,
         nsm_a=nsm_a,
         nsm_b=nsm_b,
+        marginalize_amplitude=marginalize_amplitude,
     )
     logpost = build_log_density_fn(model, {})
-    parameter_names = [*latent_names, "log_amp"]
+    parameter_names = list(latent_names)
+    if not marginalize_amplitude:
+        parameter_names.append("log_amp")
 
     def vector_logpost(vector):
         return logpost(
@@ -240,21 +244,25 @@ def find_multistart_map(
         )
     prior_latents[0] = 0.0
     for idx in range(num_starts):
-        starts.append(
-            np.concatenate(
-                [
-                    prior_latents[idx],
-                    [float(log_amp_starts[idx % len(log_amp_starts)])],
-                ]
+        if marginalize_amplitude:
+            starts.append(np.asarray(prior_latents[idx], dtype=np.float64))
+        else:
+            starts.append(
+                np.concatenate(
+                    [
+                        prior_latents[idx],
+                        [float(log_amp_starts[idx % len(log_amp_starts)])],
+                    ]
+                )
             )
-        )
 
     bounds = [
         (-8.0 * float(sigma), 8.0 * float(sigma)) for sigma in latent_sigma_arr
     ]
-    bounds.append(
-        (-4.0 * float(log_amp_sigma_val), 4.0 * float(log_amp_sigma_val))
-    )
+    if not marginalize_amplitude:
+        bounds.append(
+            (-4.0 * float(log_amp_sigma_val), 4.0 * float(log_amp_sigma_val))
+        )
 
     attempts: list[Dict[str, object]] = []
 
@@ -293,8 +301,10 @@ def find_multistart_map(
     for start in starts:
         optimize_start(start, "broad")
 
-    parameter_scales = np.concatenate(
-        [latent_sigma_arr, [float(log_amp_sigma_val)]]
+    parameter_scales = (
+        np.asarray(latent_sigma_arr, dtype=np.float64)
+        if marginalize_amplitude
+        else np.concatenate([latent_sigma_arr, [float(log_amp_sigma_val)]])
     )
     broad_basins = _summarize_map_basins(
         attempts, parameter_names, parameter_scales, basin_radius
@@ -397,6 +407,40 @@ def _normalise_latent_sigma(
 SKY_PARAM_NAMES = ("ra", "sin_dec", "psi", "t_c")
 
 
+_LN2 = float(np.log(2.0))
+# log_amp marginalization grid: uniform in u = log_amp over +/-5 prior sigmas.
+# 4096 nodes resolve likelihood peaks of width ~1/rho for rho up to ~300 at
+# the production log_amp_sigma = 5.
+_AMP_GRID_POINTS = 4096
+_AMP_GRID_HALF_WIDTH_SIGMAS = 5.0
+
+
+def _amplitude_grid(log_amp_sigma: float):
+    """Return (u nodes, log-prior at nodes, log du) for the log_amp marginal."""
+    u = jnp.linspace(
+        -_AMP_GRID_HALF_WIDTH_SIGMAS * log_amp_sigma,
+        _AMP_GRID_HALF_WIDTH_SIGMAS * log_amp_sigma,
+        _AMP_GRID_POINTS,
+    )
+    log_prior = dist.Normal(0.0, log_amp_sigma).log_prob(u)
+    log_du = jnp.log(u[1] - u[0])
+    return u, log_prior, log_du
+
+
+def _amplitude_quadratic(likelihood, params):
+    """Coefficients of ``log L(A) = A b - A^2 c / 2`` from two evaluations.
+
+    The template enters the Gaussian JIM likelihood linearly in the amplitude
+    ``A = exp(log_amp)``, so two likelihood calls determine the quadratic
+    exactly without touching the vendored likelihood internals.
+    """
+    l1 = likelihood.evaluate({**params, "log_amp": 0.0}, None)
+    l2 = likelihood.evaluate({**params, "log_amp": _LN2}, None)
+    b = (4.0 * l1 - l2) / 2.0
+    c = 2.0 * (b - l1)
+    return b, c
+
+
 def _build_numpyro_model(
     likelihood: TransientLikelihoodFD,
     latent_names,
@@ -408,6 +452,7 @@ def _build_numpyro_model(
     nsm_b: float | None = None,
     sample_sky: bool = False,
     t_c_sigma: float = 0.01,
+    marginalize_amplitude: bool = False,
 ):
     """Build the NumPyro model for the signal/glitch posterior.
 
@@ -423,6 +468,14 @@ def _build_numpyro_model(
     to the Gaussian when the PSD is correct, and discounts spurious residual
     reduction by ~``1/eta`` when the data are louder than the PSD -- making the
     evidences robust to mis-estimated / non-stationary PSDs.
+
+    With ``marginalize_amplitude`` the ``log_amp`` dimension is integrated out
+    numerically under its exact N(0, log_amp_sigma) prior (dense trapezoid grid
+    in ``log_amp``; the likelihood is an exact quadratic in ``A = exp(log_amp)``
+    so the grid needs only two likelihood evaluations per latent point). This
+    removes the low-amplitude funnel that makes NUTS diverge whenever the data
+    do not constrain the amplitude, leaving a smooth ``len(latent_names)``-D
+    posterior. The evidence is unchanged: Z = int p(z) L_marg(z) dz.
     """
     latent_names = list(latent_names)
     latent_sigma_arr = _normalise_latent_sigma(latent_sigma, latent_names)
@@ -437,15 +490,20 @@ def _build_numpyro_model(
         n_total = int(sum(q.n_bins for q in qs))
         b_val = float(nsm_a - 1.0) if nsm_b is None else float(nsm_b)
 
+    if marginalize_amplitude:
+        u_grid, u_log_prior, u_log_du = _amplitude_grid(log_amp_sigma)
+        amp_grid = jnp.exp(u_grid)
+
     def model():
         params = {}
         for idx, name in enumerate(latent_names):
             params[name] = numpyro.sample(
                 name, dist.Normal(0.0, latent_sigma_arr[idx])
             )
-        params["log_amp"] = numpyro.sample(
-            "log_amp", dist.Normal(0.0, log_amp_sigma)
-        )
+        if not marginalize_amplitude:
+            params["log_amp"] = numpyro.sample(
+                "log_amp", dist.Normal(0.0, log_amp_sigma)
+            )
         params.update(fixed_params)
         if sample_sky:
             # Isotropic sky + small time offset, sampled so the COHERENT signal must
@@ -458,12 +516,27 @@ def _build_numpyro_model(
             params["dec"] = jnp.arcsin(u_sky[2])
             params["psi"] = numpyro.sample("psi", dist.Uniform(0.0, jnp.pi))
             params["t_c"] = numpyro.sample("t_c", dist.Normal(0.0, t_c_sigma))
-        log_like = likelihood.evaluate(params, None)
-        if noise_scale_marginal:
-            resid = dd_total - 2.0 * log_like  # R(theta) = <d-h|d-h>
-            log_like = -(n_total + nsm_a) * (
-                jnp.log(resid / 2.0 + b_val) - jnp.log(dd_total / 2.0 + b_val)
+        if marginalize_amplitude:
+            b, c = _amplitude_quadratic(likelihood, params)
+            log_like_u = amp_grid * b - 0.5 * amp_grid**2 * c
+            if noise_scale_marginal:
+                resid = dd_total - 2.0 * log_like_u
+                log_like_u = -(n_total + nsm_a) * (
+                    jnp.log(resid / 2.0 + b_val)
+                    - jnp.log(dd_total / 2.0 + b_val)
+                )
+            log_like = (
+                jax.scipy.special.logsumexp(log_like_u + u_log_prior)
+                + u_log_du
             )
+        else:
+            log_like = likelihood.evaluate(params, None)
+            if noise_scale_marginal:
+                resid = dd_total - 2.0 * log_like  # R(theta) = <d-h|d-h>
+                log_like = -(n_total + nsm_a) * (
+                    jnp.log(resid / 2.0 + b_val)
+                    - jnp.log(dd_total / 2.0 + b_val)
+                )
         numpyro.factor("log_likelihood", log_like)
 
     if sample_sky:
@@ -474,6 +547,67 @@ def _build_numpyro_model(
         )
 
     return model, latent_sigma_arr, log_amp_sigma
+
+
+def draw_conditional_log_amp(
+    likelihood: TransientLikelihoodFD,
+    samples: Mapping[str, np.ndarray],
+    latent_names,
+    fixed_params: Mapping[str, float],
+    rng_key: jax.Array,
+    *,
+    log_amp_sigma: float = 5.0,
+    noise_scale_marginal: bool = False,
+    nsm_a: float = 100.0,
+    nsm_b: float | None = None,
+) -> np.ndarray:
+    """Draw ``log_amp`` from its exact 1-D conditional for each latent sample.
+
+    Used after amplitude-marginalized NUTS so the returned posterior keeps a
+    ``log_amp`` column for plotting, railing checks, and saved samples. The
+    conditional p(log_amp | z, d) is categorical on the same grid the marginal
+    used, which is exact to the grid resolution.
+    """
+    latent_names = list(latent_names)
+    u_grid, u_log_prior, _ = _amplitude_grid(float(log_amp_sigma))
+    amp_grid = jnp.exp(u_grid)
+
+    dd_total = n_total = b_val = None
+    if noise_scale_marginal:
+        from .noise_evidence import band_quantities
+
+        qs = [band_quantities(det) for det in likelihood.detectors]
+        dd_total = float(sum(q.dd for q in qs))
+        n_total = int(sum(q.n_bins for q in qs))
+        b_val = float(nsm_a - 1.0) if nsm_b is None else float(nsm_b)
+
+    fixed = {
+        key: jnp.asarray(value) for key, value in dict(fixed_params).items()
+    }
+
+    def conditional_draw(z_row, key):
+        params = {
+            name: z_row[idx] for idx, name in enumerate(latent_names)
+        }
+        b, c = _amplitude_quadratic(likelihood, {**params, **fixed})
+        log_like_u = amp_grid * b - 0.5 * amp_grid**2 * c
+        if noise_scale_marginal:
+            resid = dd_total - 2.0 * log_like_u
+            log_like_u = -(n_total + nsm_a) * (
+                jnp.log(resid / 2.0 + b_val)
+                - jnp.log(dd_total / 2.0 + b_val)
+            )
+        logits = log_like_u + u_log_prior
+        return u_grid[dist.Categorical(logits=logits).sample(key)]
+
+    z_matrix = jnp.stack(
+        [jnp.asarray(samples[name]) for name in latent_names], axis=1
+    )
+    keys = jax.random.split(rng_key, z_matrix.shape[0])
+    draws = jax.lax.map(
+        lambda args: conditional_draw(args[0], args[1]), (z_matrix, keys)
+    )
+    return np.asarray(draws, dtype=np.float64)
 
 
 def run_numpyro_sampling(
@@ -498,6 +632,7 @@ def run_numpyro_sampling(
     nsm_a: float = 100.0,
     nsm_b: float | None = None,
     sample_sky: bool = False,
+    marginalize_amplitude: bool = False,
 ) -> LikelihoodRunResult:
     """Run NumPyro NUTS sampling for the supplied likelihood."""
     if not 0.0 < target_accept_prob < 1.0:
@@ -523,6 +658,7 @@ def run_numpyro_sampling(
         nsm_a=nsm_a,
         nsm_b=nsm_b,
         sample_sky=sample_sky,
+        marginalize_amplitude=marginalize_amplitude,
     )
 
     strategy = (
@@ -612,6 +748,7 @@ def run_nested_sampling(
     nsm_a: float = 100.0,
     nsm_b: float | None = None,
     sample_sky: bool = False,
+    marginalize_amplitude: bool = False,
 ) -> LikelihoodRunResult:
     """Run JIM nested sampling using the supplied likelihood."""
     model, _, _ = _build_numpyro_model(
@@ -624,6 +761,7 @@ def run_nested_sampling(
         nsm_a=nsm_a,
         nsm_b=nsm_b,
         sample_sky=sample_sky,
+        marginalize_amplitude=marginalize_amplitude,
     )
 
     ns = NestedSampler(

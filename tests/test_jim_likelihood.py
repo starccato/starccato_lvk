@@ -308,12 +308,17 @@ def test_require_nuts_convergence_rejects_bad_rhat_before_evidence():
         analysis_main._require_nuts_convergence("test", result)
 
 
-def test_require_nuts_convergence_rejects_divergences():
+def test_require_nuts_convergence_divergence_fraction():
     draws = np.random.default_rng(5).normal(size=(2, 1000))
-    result = _likelihood_result_with_chains(draws, divergences=1)
 
-    with pytest.raises(RuntimeError, match="divergences=1"):
-        analysis_main._require_nuts_convergence("test", result)
+    # a handful of divergent transitions (<1%) is tolerated ...
+    tolerable = _likelihood_result_with_chains(draws, divergences=10)
+    analysis_main._require_nuts_convergence("test", tolerable)
+
+    # ... but a large fraction is not
+    heavy = _likelihood_result_with_chains(draws, divergences=100)
+    with pytest.raises(RuntimeError, match="divergence fraction"):
+        analysis_main._require_nuts_convergence("test", heavy)
 
 
 def test_high_level_nuts_workflows_require_two_chains(tmp_path):

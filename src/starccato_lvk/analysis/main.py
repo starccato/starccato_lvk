@@ -24,6 +24,7 @@ from .jim_waveform import StarccatoJimWaveform, StarccatoGlitchWaveform
 from .jim_likelihood import (
     LikelihoodRunResult,
     MAPInitializationResult,
+    draw_conditional_log_amp,
     find_multistart_map,
     build_transient_likelihood,
     posterior_means,
@@ -108,7 +109,9 @@ def _compute_morphz_evidence(
         )
 
     railed = False
-    if include_log_amp and "log_amp" in samples and log_amp_sigma > 0:
+    # railing detection works from reconstructed log_amp draws too, so it is
+    # independent of whether log_amp is a morphZ column (include_log_amp)
+    if "log_amp" in samples and log_amp_sigma > 0:
         railed = bool(
             abs(float(np.mean(samples["log_amp"])))
             > rail_sigma * log_amp_sigma
@@ -185,6 +188,7 @@ def _nested_evidence(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: Optional[float] = None,
+    marginalize_amplitude: bool = False,
 ) -> EvidenceResult:
     """Run nested sampling purely to obtain a fallback log-evidence."""
     run = run_nested_sampling(
@@ -200,6 +204,7 @@ def _nested_evidence(
         noise_scale_marginal=noise_scale_marginal,
         nsm_a=nsm_a,
         nsm_b=nsm_b,
+        marginalize_amplitude=marginalize_amplitude,
     )
     if not np.isfinite(run.logZ):
         return EvidenceResult.failed(
@@ -511,36 +516,66 @@ def _maximum_rhat(
     return rhat
 
 
-def _require_nuts_convergence(
+def _nuts_convergence_failure(
     label: str,
     result: LikelihoodRunResult,
     *,
     warn_rhat: float = 1.01,
     fail_rhat: float = 1.05,
-) -> None:
-    """Stop evidence estimation when multi-chain NUTS did not converge."""
+    max_divergence_fraction: float = 0.01,
+) -> Optional[str]:
+    """Return why multi-chain NUTS is untrustworthy, or ``None`` if it is fine.
+
+    A small divergence fraction (< ~1%) is routine for this geometry and does
+    not invalidate the evidence, so the criterion is fractional rather than
+    zero-tolerance. Large R-hat also arises by construction when the MAP
+    initializer deliberately seeds chains in distinct competitive basins and
+    NUTS cannot hop between them; the caller should route such runs to nested
+    sampling (which integrates multimodal posteriors correctly) instead of
+    aborting.
+    """
     grouped = result.extra.get("samples_grouped")
     if not grouped:
-        raise RuntimeError(f"NUTS [{label}] did not retain grouped chains.")
+        return "did not retain grouped chains"
     num_chains = int(result.extra.get("num_chains", 0))
     if num_chains < 2:
-        raise RuntimeError(
-            f"NUTS [{label}] requires at least two chains; got {num_chains}."
-        )
+        return f"requires at least two chains; got {num_chains}"
     rhat = _maximum_rhat(grouped)
     if not rhat:
-        raise RuntimeError(f"NUTS [{label}] produced no finite R-hat values.")
+        return "produced no finite R-hat values"
     maximum = max(rhat.values())
-    divergences = int(np.sum(np.asarray(result.extra.get("diverging", 0))))
-    if maximum > fail_rhat or divergences:
-        raise RuntimeError(
-            f"NUTS [{label}] failed convergence: max R-hat={maximum:.4f}, "
-            f"divergences={divergences}. lnZ was not computed."
+    diverging = np.asarray(result.extra.get("diverging", 0))
+    divergences = int(np.sum(diverging))
+    fraction = divergences / max(diverging.size, 1)
+    if maximum > fail_rhat:
+        return f"max R-hat={maximum:.4f} > {fail_rhat}"
+    if fraction > max_divergence_fraction:
+        return (
+            f"divergence fraction {fraction:.2%} "
+            f"({divergences} transitions) > {max_divergence_fraction:.0%}"
+        )
+    if divergences:
+        print(
+            f"[sampling] NUTS [{label}]: {divergences} divergent transitions "
+            f"({fraction:.2%}) tolerated below the {max_divergence_fraction:.0%} threshold."
         )
     if maximum > warn_rhat:
         print(
             f"[sampling] WARNING: NUTS [{label}] max R-hat={maximum:.4f} "
             f"exceeds the publication target {warn_rhat:.2f}."
+        )
+    return None
+
+
+def _require_nuts_convergence(
+    label: str,
+    result: LikelihoodRunResult,
+) -> None:
+    """Stop evidence estimation when multi-chain NUTS did not converge."""
+    reason = _nuts_convergence_failure(label, result)
+    if reason:
+        raise RuntimeError(
+            f"NUTS [{label}] failed convergence: {reason}. lnZ was not computed."
         )
 
 
@@ -868,13 +903,20 @@ def run_bcr_posteriors(
     nsm_a: float = 100.0,
     nsm_b: Optional[float] = None,
     verify_logz_threshold: Optional[float] = 50.0,
+    amplitude_marginal: bool = True,
 ) -> Dict[str, Dict[str, float]]:
     if lnz_method.lower() != "nested" and num_chains < 2:
         raise ValueError("NUTS BCR analyses require at least two chains.")
     detector_names = [det.upper() for det in detectors]
     bundle_map = _normalise_bundle_paths(bundle_paths)
+    # marginalize_amplitude removes the low-amplitude NUTS funnel (and one
+    # dimension); it rides in nsm_kwargs because every model/sampler/evidence
+    # call must agree on it.
     nsm_kwargs = dict(
-        noise_scale_marginal=noise_scale_marginal, nsm_a=nsm_a, nsm_b=nsm_b
+        noise_scale_marginal=noise_scale_marginal,
+        nsm_a=nsm_a,
+        nsm_b=nsm_b,
+        marginalize_amplitude=amplitude_marginal,
     )
 
     prepare_kwargs = {}
@@ -979,7 +1021,11 @@ def run_bcr_posteriors(
                 signal_chain_method,
             ) = _map_nuts_initialization(
                 signal_map_result,
-                [*signal_latent_names, "log_amp"],
+                (
+                    list(signal_latent_names)
+                    if amplitude_marginal
+                    else [*signal_latent_names, "log_amp"]
+                ),
                 num_chains,
                 chain_method=(
                     "sequential"
@@ -1004,6 +1050,20 @@ def run_bcr_posteriors(
             init_params=signal_init_params,
             **nsm_kwargs,
         )
+        if amplitude_marginal:
+            # keep a log_amp column for plots/railing checks: exact 1-D
+            # conditional draws given each latent sample
+            signal_result.samples["log_amp"] = draw_conditional_log_amp(
+                signal_likelihood,
+                signal_result.samples,
+                signal_latent_names,
+                extrinsics,
+                jax.random.fold_in(signal_rng, 999),
+                log_amp_sigma=log_amp_sigma_signal,
+                noise_scale_marginal=noise_scale_marginal,
+                nsm_a=nsm_a,
+                nsm_b=nsm_b,
+            )
 
     _report_effective_sample_sizes(
         "signal", signal_result.extra.get("samples_grouped")
@@ -1043,6 +1103,7 @@ def run_bcr_posteriors(
                 + "\n"
             )
 
+    signal_conv_failure = None
     if not use_nested:
         results["nuts_diagnostics"]["signal"] = _nuts_diagnostics_summary(
             signal_result
@@ -1051,7 +1112,9 @@ def run_bcr_posteriors(
             results["map_initialization"]["signal"] = (
                 _brief_map_initialization_summary(signal_map_result)
             )
-        _require_nuts_convergence("signal", signal_result)
+        signal_conv_failure = _nuts_convergence_failure(
+            "signal", signal_result
+        )
 
     evidence_status: Dict[str, Dict[str, object]] = {}
     if use_nested:
@@ -1079,25 +1142,36 @@ def run_bcr_posteriors(
             num_posterior_samples=nested_num_posterior_samples or num_samples,
             **nsm_kwargs,
         )
-        signal_evidence = _compute_morphz_evidence(
-            signal_result.samples,
-            signal_result.extra.get("log_posterior"),
-            signal_latent_names,
-            True,
-            signal_model_callable,
-            extrinsics,
-            signal_dir if save_artifacts else base_outdir,
-            "signal",
-            fallback=signal_fallback,
-            log_amp_sigma=log_amp_sigma_signal,
-            verify_logz_threshold=verify_logz_threshold,
-        )
+        if signal_conv_failure:
+            # unmixed or diverging chains: morphZ on those samples would be
+            # finite but wrong, so go straight to nested sampling, which
+            # integrates multimodal posteriors correctly.
+            print(
+                "[sampling] NUTS [signal] unconverged "
+                f"({signal_conv_failure}); computing lnZ by nested sampling."
+            )
+            signal_evidence = signal_fallback()
+        else:
+            signal_evidence = _compute_morphz_evidence(
+                signal_result.samples,
+                signal_result.extra.get("log_posterior"),
+                signal_latent_names,
+                not amplitude_marginal,
+                signal_model_callable,
+                extrinsics,
+                signal_dir if save_artifacts else base_outdir,
+                "signal",
+                fallback=signal_fallback,
+                log_amp_sigma=log_amp_sigma_signal,
+                verify_logz_threshold=verify_logz_threshold,
+            )
         signal_logZ = signal_evidence.logZ
         signal_logZ_err = signal_evidence.logZ_err
         evidence_status["signal"] = {
             "method": signal_evidence.method,
             "status": signal_evidence.status,
             "n_attempts": signal_evidence.n_attempts,
+            "nuts_convergence_failure": signal_conv_failure,
         }
     results["signal"]["logZ"] = signal_logZ
     results["signal"]["logZ_err"] = signal_logZ_err
@@ -1171,7 +1245,11 @@ def run_bcr_posteriors(
                     glitch_chain_method,
                 ) = _map_nuts_initialization(
                     glitch_map_result,
-                    [*glitch_latent_names, "log_amp"],
+                    (
+                        list(glitch_latent_names)
+                        if amplitude_marginal
+                        else [*glitch_latent_names, "log_amp"]
+                    ),
                     num_chains,
                     chain_method="sequential",
                 )
@@ -1192,6 +1270,18 @@ def run_bcr_posteriors(
                 init_params=glitch_init_params,
                 **nsm_kwargs,
             )
+            if amplitude_marginal:
+                glitch_result.samples["log_amp"] = draw_conditional_log_amp(
+                    glitch_likelihood,
+                    glitch_result.samples,
+                    glitch_latent_names,
+                    {},
+                    jax.random.fold_in(glitch_rng, 999),
+                    log_amp_sigma=log_amp_sigma_glitch,
+                    noise_scale_marginal=noise_scale_marginal,
+                    nsm_a=nsm_a,
+                    nsm_b=nsm_b,
+                )
 
         _report_effective_sample_sizes(
             f"glitch {det.name}", glitch_result.extra.get("samples_grouped")
@@ -1231,6 +1321,7 @@ def run_bcr_posteriors(
                     + "\n"
                 )
 
+        glitch_conv_failure = None
         if not use_nested:
             results["nuts_diagnostics"][f"glitch_{det.name}"] = (
                 _nuts_diagnostics_summary(glitch_result)
@@ -1239,7 +1330,9 @@ def run_bcr_posteriors(
                 results["map_initialization"][f"glitch_{det.name}"] = (
                     _brief_map_initialization_summary(glitch_map_result)
                 )
-            _require_nuts_convergence(f"glitch {det.name}", glitch_result)
+            glitch_conv_failure = _nuts_convergence_failure(
+                f"glitch {det.name}", glitch_result
+            )
 
         if use_nested:
             glitch_logZ = glitch_result.logZ
@@ -1270,25 +1363,33 @@ def run_bcr_posteriors(
                 or num_samples,
                 **nsm_kwargs,
             )
-            glitch_evidence = _compute_morphz_evidence(
-                glitch_result.samples,
-                glitch_result.extra.get("log_posterior"),
-                glitch_latent_names,
-                True,
-                glitch_model_callable,
-                {},
-                glitch_dir if save_artifacts else base_outdir,
-                f"glitch_{det.name.lower()}",
-                fallback=glitch_fallback,
-                log_amp_sigma=log_amp_sigma_glitch,
-                verify_logz_threshold=verify_logz_threshold,
-            )
+            if glitch_conv_failure:
+                print(
+                    f"[sampling] NUTS [glitch {det.name}] unconverged "
+                    f"({glitch_conv_failure}); computing lnZ by nested sampling."
+                )
+                glitch_evidence = glitch_fallback()
+            else:
+                glitch_evidence = _compute_morphz_evidence(
+                    glitch_result.samples,
+                    glitch_result.extra.get("log_posterior"),
+                    glitch_latent_names,
+                    not amplitude_marginal,
+                    glitch_model_callable,
+                    {},
+                    glitch_dir if save_artifacts else base_outdir,
+                    f"glitch_{det.name.lower()}",
+                    fallback=glitch_fallback,
+                    log_amp_sigma=log_amp_sigma_glitch,
+                    verify_logz_threshold=verify_logz_threshold,
+                )
             glitch_logZ = glitch_evidence.logZ
             glitch_logZ_err = glitch_evidence.logZ_err
             evidence_status[f"glitch_{det.name}"] = {
                 "method": glitch_evidence.method,
                 "status": glitch_evidence.status,
                 "n_attempts": glitch_evidence.n_attempts,
+                "nuts_convergence_failure": glitch_conv_failure,
             }
         results["glitch"][det.name] = glitch_logZ
         results["glitch_err"][det.name] = glitch_logZ_err

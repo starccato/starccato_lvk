@@ -403,6 +403,7 @@ def analyse_manifest(
         "map_num_starts": int(map_num_starts),
         "map_maxiter": int(map_maxiter),
         "noise_scale_marginal": bool(nsm),
+        "amplitude_marginal": True,
         "nested_fallback_num_live_points": 300,
         "nested_fallback_max_samples": 6000,
         "flow": float(flow),
