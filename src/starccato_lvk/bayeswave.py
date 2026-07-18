@@ -314,6 +314,11 @@ def bayeswave_command(
             str(settings.threads),
             "--chainseed",
             str(settings.seed),
+            # Required for checkpoint resume: on resume BayesWave regenerates its
+            # data realization and refuses to without a fixed --dataseed. Must
+            # match BayesWavePost's --dataseed so Post reconstructs the same data.
+            "--dataseed",
+            str(settings.seed),
             "--outputDir",
             str(Path(output_dir).resolve()),
             "--bayesLine",

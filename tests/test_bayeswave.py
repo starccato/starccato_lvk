@@ -95,6 +95,8 @@ def test_commands_match_manifest_and_fixed_sky(tmp_path):
     assert command[command.index("--trigtime") + 1] == "1260000002.0"
     assert command[command.index("--fixRA") + 1] == "1.2"
     assert command[command.index("--fixDEC") + 1] == "-0.3"
+    # Checkpoint resume fails without --dataseed; it must match Post's dataseed.
+    assert command[command.index("--dataseed") + 1] == str(settings.seed)
 
     post = bayeswave_post_command(
         "BayesWavePost", inputs, output, 300.0, 800.0, settings

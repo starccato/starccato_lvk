@@ -4,9 +4,8 @@ Reads the per-event JSONs written by ``real_noise_event.py`` (fields: cls, snr,
 logZ_signal, logZ_glitch, log_odds) for the single-detector (L1) and/or
 two-detector (H1 L1) runs, and produces:
 
-  fig_roc.pdf          ROC curves -- odds vs a descriptive loudness proxy,
-                       one panel per network.
-  fig_score_dist.pdf   logBCR distributions across the four event classes.
+  fig_roc.pdf          ROC curves (bootstrap median + band) -- odds vs the
+                       reweighted-SNR and descriptive loudness statistics.
   fig_odds_vs_snr.pdf  logBCR vs transient loudness, with explicit treatment of
                        the incompatible injection and catalogue SNR definitions.
   fig_efficiency.pdf   signal detection efficiency vs injected SNR at a fixed
@@ -197,28 +196,6 @@ def fig_roc(runs: Dict[str, dict], out: Path) -> None:
         ax.set_xlim(fap_min, 1)
         ax.set_ylim(0, 1.02)
         ax.legend(loc="lower right", frameon=False)
-    fig.tight_layout()
-    fig.savefig(out, bbox_inches="tight")
-    plt.close(fig)
-
-
-def fig_score_dist(runs: Dict[str, dict], out: Path) -> None:
-    fig, axes = plt.subplots(1, len(runs), figsize=(PANEL_W * len(runs), PANEL_H), squeeze=False)
-    for ax, (net, run) in zip(axes[0], runs.items()):
-        allvals = np.concatenate([run[c]["log_odds"][np.isfinite(run[c]["log_odds"])] for c in CLASSES])
-        lo, hi = np.percentile(allvals, [1, 99])
-        bins = np.linspace(lo, hi, 45)
-        for c in CLASSES:
-            v = run[c]["log_odds"]
-            v = v[np.isfinite(v)]
-            ax.hist(np.clip(v, lo, hi), bins=bins, histtype="step", lw=2,
-                    density=True, color=COLORS[c], label=LABELS[c])
-        ax.axvline(0, color="k", ls="--", lw=1, alpha=0.7)
-        ax.set_xlabel(r"$\ln\,\mathcal{O}$  (log Bayesian odds)")
-        ax.set_ylabel("density")
-        display_net = "H1-L1" if net == "H1L1" else net
-        ax.set_title(f"{display_net} network")
-        ax.legend(frameon=False, fontsize=9)
     fig.tight_layout()
     fig.savefig(out, bbox_inches="tight")
     plt.close(fig)
@@ -478,7 +455,6 @@ def main() -> None:
 
     args.outdir.mkdir(parents=True, exist_ok=True)
     fig_roc(runs, args.outdir / "fig_roc.pdf")
-    fig_score_dist(runs, args.outdir / "fig_score_dist.pdf")
     fig_odds_vs_snr(runs, args.outdir / "fig_odds_vs_snr.pdf")
     fig_efficiency(runs, args.outdir / "fig_efficiency.pdf")
     write_table(runs, args.outdir / "summary_table.tex")
