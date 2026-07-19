@@ -12,8 +12,8 @@ It mirrors the three scenarios used on real data:
 3. noise with a blip glitch injected in a single detector
 
 Example:
-    PYTHONPATH=lvk/src ./starccato_venv/bin/python lvk/studies/simulated_design_psd.py \
-        --outdir lvk/studies/out_sim_psd \
+    uv run python studies/simulated_design_psd.py \
+        --outdir studies/out_sim_psd \
         --detector H1 --detector L1 \
         --signal-distance 2.0 \
         --glitch-detector H1
@@ -40,7 +40,6 @@ from starccato_jax.waveforms import get_model
 from starccato_lvk.analysis.jim_waveform import StarccatoJimWaveform
 from starccato_lvk.analysis.main import run_bcr_posteriors
 from starccato_lvk.acquisition.io.strain_loader import _write_analysis_bundle
-
 
 ASD_URLS = {
     "H1": "https://dcc.ligo.org/public/0169/P2000251/001/O3-H1-C01_CLEAN_SUB60HZ-1251752040.0_sensitivity_strain_asd.txt",
@@ -114,12 +113,16 @@ def download_asd(det: str, cache_dir: Path) -> Path:
     return dest
 
 
-def build_design_psd(det: str, delta_f: float, n_freq: int, cache_dir: Path) -> PycbcFrequencySeries:
+def build_design_psd(
+    det: str, delta_f: float, n_freq: int, cache_dir: Path
+) -> PycbcFrequencySeries:
     asd_path = download_asd(det, cache_dir)
     freq, asd = np.loadtxt(asd_path, unpack=True)
     psd_vals = np.square(asd)
     freq_grid = np.arange(n_freq) * delta_f
-    interp = np.interp(freq_grid, freq, psd_vals, left=psd_vals[0], right=psd_vals[-1])
+    interp = np.interp(
+        freq_grid, freq, psd_vals, left=psd_vals[0], right=psd_vals[-1]
+    )
     return PycbcFrequencySeries(interp.astype(np.float64), delta_f=delta_f)
 
 
@@ -129,16 +132,20 @@ def pycbc_psd_to_gwpy(psd: PycbcFrequencySeries) -> FrequencySeries:
         data,
         f0=0.0,
         df=float(psd.delta_f),
-        unit=(u.Hz ** -1),
+        unit=(u.Hz**-1),
     )
 
 
-def simulate_noise(psd: PycbcFrequencySeries, length: int, delta_t: float, seed: int) -> np.ndarray:
+def simulate_noise(
+    psd: PycbcFrequencySeries, length: int, delta_t: float, seed: int
+) -> np.ndarray:
     noise_ts = noise_from_psd(length, delta_t, psd, seed=seed)
     return np.asarray(noise_ts.numpy(), dtype=np.float64)
 
 
-def build_waveform(model_name: str, sample_rate: float, log_amp: float) -> np.ndarray:
+def build_waveform(
+    model_name: str, sample_rate: float, log_amp: float
+) -> np.ndarray:
     model = get_model(model_name)
     waveform = StarccatoJimWaveform(model=model, sample_rate=sample_rate)
     params = {name: 0.0 for name in waveform.latent_names}
@@ -170,7 +177,9 @@ def center_injection(data: np.ndarray, injection: np.ndarray) -> np.ndarray:
     return inserted
 
 
-def to_timeseries(values: np.ndarray, sample_rate: float, trigger_time: float, label: str) -> TimeSeries:
+def to_timeseries(
+    values: np.ndarray, sample_rate: float, trigger_time: float, label: str
+) -> TimeSeries:
     dt = 1.0 / sample_rate
     duration = len(values) * dt
     epoch = trigger_time - duration / 2.0
@@ -191,10 +200,14 @@ def write_bundle(
     trigger_time: float,
 ) -> None:
     bundle_path.parent.mkdir(parents=True, exist_ok=True)
-    _write_analysis_bundle(str(bundle_path), chunk_ts, full_ts, psd_fs, trigger_time)
+    _write_analysis_bundle(
+        str(bundle_path), chunk_ts, full_ts, psd_fs, trigger_time
+    )
 
 
-def crop_analysis_chunk(full_ts: TimeSeries, trigger_time: float, chunk_samples: int) -> TimeSeries:
+def crop_analysis_chunk(
+    full_ts: TimeSeries, trigger_time: float, chunk_samples: int
+) -> TimeSeries:
     dt = full_ts.dt.value
     span = chunk_samples * dt / 2.0
     return full_ts.crop(trigger_time - span, trigger_time + span)
@@ -219,26 +232,46 @@ def generate_scenario_bundles(
     delta_t = 1.0 / sample_rate
     delta_f = psd_cache[next(iter(psd_cache))].delta_f
     n_full = int(full_duration * sample_rate)
-    trigger_time = BASE_TRIGGER + {"noise": 0, "signal": 10, "glitch": 20}.get(scenario, 0)
+    trigger_time = BASE_TRIGGER + {"noise": 0, "signal": 10, "glitch": 20}.get(
+        scenario, 0
+    )
 
     bundle_paths: Dict[str, Path] = {}
-    signal_waveform = build_waveform(signal_model, sample_rate, signal_log_amp) if scenario == "signal" else None
-    glitch_waveform = build_waveform(glitch_model, sample_rate, glitch_log_amp) if scenario == "glitch" else None
+    signal_waveform = (
+        build_waveform(signal_model, sample_rate, signal_log_amp)
+        if scenario == "signal"
+        else None
+    )
+    glitch_waveform = (
+        build_waveform(glitch_model, sample_rate, glitch_log_amp)
+        if scenario == "glitch"
+        else None
+    )
 
     diag_dir = outdir / "diagnostics"
 
     for det_index, det in enumerate(detectors):
         psd = psd_cache[det]
-        seed = base_seed + 100 * det_index + {"noise": 0, "signal": 1000, "glitch": 2000}.get(scenario, 0)
+        seed = (
+            base_seed
+            + 100 * det_index
+            + {"noise": 0, "signal": 1000, "glitch": 2000}.get(scenario, 0)
+        )
         noise_data = simulate_noise(psd, n_full, delta_t, seed)
         injection_trace = np.zeros_like(noise_data)
 
         if scenario == "signal" and signal_waveform is not None:
             injection_trace = center_injection(noise_data, signal_waveform)
-        if scenario == "glitch" and det.upper() == glitch_detector.upper() and glitch_waveform is not None:
+        if (
+            scenario == "glitch"
+            and det.upper() == glitch_detector.upper()
+            and glitch_waveform is not None
+        ):
             injection_trace = center_injection(noise_data, glitch_waveform)
 
-        full_ts = to_timeseries(noise_data, sample_rate, trigger_time, f"{det}_{scenario}")
+        full_ts = to_timeseries(
+            noise_data, sample_rate, trigger_time, f"{det}_{scenario}"
+        )
         chunk_ts = crop_analysis_chunk(full_ts, trigger_time, chunk_samples)
         psd_fs = pycbc_psd_to_gwpy(psd)
         det_dir = outdir / "bundles" / det.upper()
@@ -270,7 +303,9 @@ def plot_simulated_data_diagnostics(
     outdir: Path,
 ) -> None:
     outdir.mkdir(parents=True, exist_ok=True)
-    times = (np.arange(len(data)) / sample_rate) - (len(data) / (2.0 * sample_rate))
+    times = (np.arange(len(data)) / sample_rate) - (
+        len(data) / (2.0 * sample_rate)
+    )
 
     window = np.hanning(len(data))
     windowed = data * window
@@ -278,26 +313,36 @@ def plot_simulated_data_diagnostics(
     spectrum = np.fft.rfft(windowed)
     df = freqs[1] - freqs[0] if len(freqs) > 1 else 0.0
     norm = (np.sum(window**2) / len(window)) if len(window) else 1.0
-    periodogram = (np.abs(spectrum) ** 2) * (2.0 * df / (sample_rate * max(norm, 1e-12)))
+    periodogram = (np.abs(spectrum) ** 2) * (
+        2.0 * df / (sample_rate * max(norm, 1e-12))
+    )
     asd_periodogram = np.sqrt(np.maximum(periodogram, 1e-40))
 
     psd_values = np.asarray(psd.numpy(), dtype=np.float64)
     psd_freqs = np.arange(len(psd_values)) * float(psd.delta_f)
     asd_design = np.sqrt(np.maximum(psd_values, 1e-40))
 
-    fig, (ax_time, ax_freq) = plt.subplots(2, 1, figsize=(8, 6), constrained_layout=True)
+    fig, (ax_time, ax_freq) = plt.subplots(
+        2, 1, figsize=(8, 6), constrained_layout=True
+    )
     ax_time.plot(times, data, label="data", lw=1.0)
     if np.any(np.abs(injection) > 0.0):
-        ax_time.plot(times, injection, label="injection", lw=0.9, color="tab:red")
+        ax_time.plot(
+            times, injection, label="injection", lw=0.9, color="tab:red"
+        )
     ax_time.set_xlabel("Time [s]")
     ax_time.set_ylabel("Strain")
     ax_time.set_title(f"{det} {scenario}: time series")
     ax_time.legend(loc="upper right")
 
     valid = freqs > 0
-    ax_freq.loglog(freqs[valid], asd_periodogram[valid], label="Periodogram ASD")
+    ax_freq.loglog(
+        freqs[valid], asd_periodogram[valid], label="Periodogram ASD"
+    )
     design_valid = psd_freqs > 0
-    ax_freq.loglog(psd_freqs[design_valid], asd_design[design_valid], label="Design ASD")
+    ax_freq.loglog(
+        psd_freqs[design_valid], asd_design[design_valid], label="Design ASD"
+    )
     ax_freq.set_xlabel("Frequency [Hz]")
     ax_freq.set_ylabel(r"ASD [$1/\sqrt{Hz}$]")
     ax_freq.set_title("Frequency domain")
@@ -356,33 +401,157 @@ def run_analysis_on_scenario(
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Simulate design-PSD datasets and run Starccato analysis.")
-    parser.add_argument("--outdir", type=Path, default=Path("lvk/studies/out_sim_psd"), help="Output root for synthetic bundles and analyses.")
-    parser.add_argument("--cache-dir", type=Path, default=Path("lvk/studies/design_psd_cache"), help="Directory to cache downloaded ASD files.")
-    parser.add_argument("--detector", action="append", dest="detectors", default=["H1", "L1"], help="Detector to include (repeat).")
-    parser.add_argument("--scenarios", nargs="*", default=["noise", "signal", "glitch"], choices=["noise", "signal", "glitch"], help="Scenarios to generate.")
-    parser.add_argument("--sample-rate", type=float, default=DEFAULT_SAMPLE_RATE, help="Sample rate in Hz for simulated data.")
-    parser.add_argument("--duration", type=float, default=DEFAULT_FULL_DURATION, help="Full noise duration in seconds (sets PSD delta_f).")
-    parser.add_argument("--chunk-samples", type=int, default=DEFAULT_CHUNK_SAMPLES, help="Number of samples in the analysis window.")
-    parser.add_argument("--seed", type=int, default=0, help="Base RNG seed for noise draws.")
-    parser.add_argument("--signal-distance", type=float, default=1.0, help="Distance scale for coherent CCSN injection (lower is louder).")
-    parser.add_argument("--glitch-distance", type=float, default=0.3, help="Distance-like scale for blip glitch injection amplitude.")
-    parser.add_argument("--glitch-detector", type=str, default="H1", help="Detector to host the glitch in the 'glitch' scenario.")
-    parser.add_argument("--signal-model", type=str, default="ccsne", help="Waveform model for coherent injection.")
-    parser.add_argument("--glitch-model", type=str, default="blip", help="Waveform model for glitch injection.")
-    parser.add_argument("--num-samples", type=int, default=1000, help="NumPyro samples for BCR analysis.")
-    parser.add_argument("--num-warmup", type=int, default=1000, help="NumPyro warmup steps.")
-    parser.add_argument("--num-chains", type=int, default=1, help="NumPyro chains.")
-    parser.add_argument("--latent-sigma-signal", type=float, default=1.0, help="Latent prior sigma for coherent model.")
-    parser.add_argument("--latent-sigma-glitch", type=float, default=0.5, help="Latent prior sigma for glitch model.")
-    parser.add_argument("--log-amp-sigma-signal", type=float, default=1.0, help="log_amp sigma for coherent model.")
-    parser.add_argument("--log-amp-sigma-glitch", type=float, default=0.2, help="log_amp sigma for glitch model.")
-    parser.add_argument("--rng-seed", type=int, default=1234, help="Seed controlling sampling order in BCR analysis.")
-    parser.add_argument("--lnz-method", choices=["morph", "nested"], default="nested", help="Backend used to compute logZ (morph or nested).")
-    parser.add_argument("--nested-num-live-points", type=int, default=100, help="NumPyro NestedSampler live points (lnz_method=nested).")
-    parser.add_argument("--nested-max-samples", type=int, default=200, help="NestedSampler max samples (lnz_method=nested).")
-    parser.add_argument("--nested-num-posterior-samples", type=int, default=None, help="Posterior draws to keep from NestedSampler (defaults to --num-samples).")
-    parser.add_argument("--skip-analysis", action="store_true", help="Only generate bundles; skip inference.")
+    parser = argparse.ArgumentParser(
+        description="Simulate design-PSD datasets and run Starccato analysis."
+    )
+    parser.add_argument(
+        "--outdir",
+        type=Path,
+        default=Path("studies/out_sim_psd"),
+        help="Output root for synthetic bundles and analyses.",
+    )
+    parser.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path("studies/design_psd_cache"),
+        help="Directory to cache downloaded ASD files.",
+    )
+    parser.add_argument(
+        "--detector",
+        action="append",
+        dest="detectors",
+        default=["H1", "L1"],
+        help="Detector to include (repeat).",
+    )
+    parser.add_argument(
+        "--scenarios",
+        nargs="*",
+        default=["noise", "signal", "glitch"],
+        choices=["noise", "signal", "glitch"],
+        help="Scenarios to generate.",
+    )
+    parser.add_argument(
+        "--sample-rate",
+        type=float,
+        default=DEFAULT_SAMPLE_RATE,
+        help="Sample rate in Hz for simulated data.",
+    )
+    parser.add_argument(
+        "--duration",
+        type=float,
+        default=DEFAULT_FULL_DURATION,
+        help="Full noise duration in seconds (sets PSD delta_f).",
+    )
+    parser.add_argument(
+        "--chunk-samples",
+        type=int,
+        default=DEFAULT_CHUNK_SAMPLES,
+        help="Number of samples in the analysis window.",
+    )
+    parser.add_argument(
+        "--seed", type=int, default=0, help="Base RNG seed for noise draws."
+    )
+    parser.add_argument(
+        "--signal-distance",
+        type=float,
+        default=1.0,
+        help="Distance scale for coherent CCSN injection (lower is louder).",
+    )
+    parser.add_argument(
+        "--glitch-distance",
+        type=float,
+        default=0.3,
+        help="Distance-like scale for blip glitch injection amplitude.",
+    )
+    parser.add_argument(
+        "--glitch-detector",
+        type=str,
+        default="H1",
+        help="Detector to host the glitch in the 'glitch' scenario.",
+    )
+    parser.add_argument(
+        "--signal-model",
+        type=str,
+        default="ccsne",
+        help="Waveform model for coherent injection.",
+    )
+    parser.add_argument(
+        "--glitch-model",
+        type=str,
+        default="blip",
+        help="Waveform model for glitch injection.",
+    )
+    parser.add_argument(
+        "--num-samples",
+        type=int,
+        default=1000,
+        help="NumPyro samples for BCR analysis.",
+    )
+    parser.add_argument(
+        "--num-warmup", type=int, default=1000, help="NumPyro warmup steps."
+    )
+    parser.add_argument(
+        "--num-chains", type=int, default=1, help="NumPyro chains."
+    )
+    parser.add_argument(
+        "--latent-sigma-signal",
+        type=float,
+        default=1.0,
+        help="Latent prior sigma for coherent model.",
+    )
+    parser.add_argument(
+        "--latent-sigma-glitch",
+        type=float,
+        default=0.5,
+        help="Latent prior sigma for glitch model.",
+    )
+    parser.add_argument(
+        "--log-amp-sigma-signal",
+        type=float,
+        default=1.0,
+        help="log_amp sigma for coherent model.",
+    )
+    parser.add_argument(
+        "--log-amp-sigma-glitch",
+        type=float,
+        default=0.2,
+        help="log_amp sigma for glitch model.",
+    )
+    parser.add_argument(
+        "--rng-seed",
+        type=int,
+        default=1234,
+        help="Seed controlling sampling order in BCR analysis.",
+    )
+    parser.add_argument(
+        "--lnz-method",
+        choices=["morph", "nested"],
+        default="nested",
+        help="Backend used to compute logZ (morph or nested).",
+    )
+    parser.add_argument(
+        "--nested-num-live-points",
+        type=int,
+        default=100,
+        help="NumPyro NestedSampler live points (lnz_method=nested).",
+    )
+    parser.add_argument(
+        "--nested-max-samples",
+        type=int,
+        default=200,
+        help="NestedSampler max samples (lnz_method=nested).",
+    )
+    parser.add_argument(
+        "--nested-num-posterior-samples",
+        type=int,
+        default=None,
+        help="Posterior draws to keep from NestedSampler (defaults to --num-samples).",
+    )
+    parser.add_argument(
+        "--skip-analysis",
+        action="store_true",
+        help="Only generate bundles; skip inference.",
+    )
     return parser.parse_args()
 
 

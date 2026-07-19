@@ -167,10 +167,6 @@ class Data(ABC):
             f"{self.__class__.__name__}(name='{self.name}', "
             + f"delta_t={self.delta_t}, epoch={self.epoch})"
         )
-        return (
-            f"{self.__class__.__name__}(name='{self.name}', "
-            + f"delta_t={self.delta_t}, epoch={self.epoch})"
-        )
 
     def __bool__(self) -> bool:
         """Check if the data is empty."""
@@ -342,7 +338,9 @@ class Data(ABC):
         """
         data = jnp.load(path, allow_pickle=True)
         if "td" not in data or "dt" not in data or "epoch" not in data:
-            raise ValueError("The file must contain 'td', 'dt', and 'epoch' keys.")
+            raise ValueError(
+                "The file must contain 'td', 'dt', and 'epoch' keys."
+            )
         td = data["td"]
         dt = float(data["dt"])
         epoch = float(data["epoch"])
@@ -484,7 +482,10 @@ class PowerSpectrum(ABC):
         return self.values[mask], self.frequencies[mask]
 
     def interpolate(
-        self, frequencies: Float[Array, " n_sample"], kind: str = "linear", **kws
+        self,
+        frequencies: Float[Array, " n_sample"],
+        kind: str = "linear",
+        **kws,
     ) -> "PowerSpectrum":
         """Interpolate the power spectrum to new frequencies.
 
@@ -536,7 +537,9 @@ class PowerSpectrum(ABC):
         """
         data = np.load(path, allow_pickle=True)
         if "values" not in data or "frequencies" not in data:
-            raise ValueError("The file must contain 'values' and 'frequencies' keys.")
+            raise ValueError(
+                "The file must contain 'values' and 'frequencies' keys."
+            )
         values = data["values"]
         frequencies = data["frequencies"]
         name = data.get("name", "")

@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Dict, Iterable, Mapping, Optional, Sequence
-import importlib
-import sys
-import types
 
 import jax
 import jax.numpy as jnp
@@ -404,9 +401,6 @@ def _normalise_latent_sigma(
     return latent_sigma
 
 
-SKY_PARAM_NAMES = ("ra", "sin_dec", "psi", "t_c")
-
-
 _LN2 = float(np.log(2.0))
 # log_amp marginalization grid: uniform in u = log_amp over +/-5 prior sigmas.
 # 4096 nodes resolve likelihood peaks of width ~1/rho for rho up to ~300 at
@@ -586,16 +580,13 @@ def draw_conditional_log_amp(
     }
 
     def conditional_draw(z_row, key):
-        params = {
-            name: z_row[idx] for idx, name in enumerate(latent_names)
-        }
+        params = {name: z_row[idx] for idx, name in enumerate(latent_names)}
         b, c = _amplitude_quadratic(likelihood, {**params, **fixed})
         log_like_u = amp_grid * b - 0.5 * amp_grid**2 * c
         if noise_scale_marginal:
             resid = dd_total - 2.0 * log_like_u
             log_like_u = -(n_total + nsm_a) * (
-                jnp.log(resid / 2.0 + b_val)
-                - jnp.log(dd_total / 2.0 + b_val)
+                jnp.log(resid / 2.0 + b_val) - jnp.log(dd_total / 2.0 + b_val)
             )
         logits = log_like_u + u_log_prior
         return u_grid[dist.Categorical(logits=logits).sample(key)]

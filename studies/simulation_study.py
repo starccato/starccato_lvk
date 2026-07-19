@@ -9,15 +9,16 @@ This uses the high-level workflow utilities so it reuses the same
 data acquisition and analysis paths as the CLI/SLURM flows.
 
 Usage:
-    python lvk/studies/simulation_study.py \
+    uv run python studies/simulation_study.py \
         --index 0 \
-        --config lvk/slurm/configs/analysis.yaml \
+        --config slurm/configs/analysis.yaml \
+        --triggers-csv /path/to/triggers.csv \
         --distance 1.0 \
         --stage both \
         [--force]
 
 Results are written under the output_root configured in the YAML
-(default: lvk/slurm/out/<scenario>/<gps>/...).
+(default: slurm/out/<scenario>/<gps>/...).
 """
 
 from __future__ import annotations
@@ -27,7 +28,6 @@ from pathlib import Path
 
 from starccato_lvk.workflows.run_event import (
     CONFIG_DEFAULT,
-    TRIGGERS_CSV_DEFAULT,
     load_analysis_config,
     read_event_from_triggers_csv,
     run_event_workflow,
@@ -48,7 +48,16 @@ def _filter_detectors_for_gps(detectors: list[str], gps: float) -> list[str]:
     return available
 
 
-def _run_one(scenario: str, index: int, config_path: Path, triggers_csv: Path, *, force: bool, distance: float, stage: str) -> None:
+def _run_one(
+    scenario: str,
+    index: int,
+    config_path: Path,
+    triggers_csv: Path,
+    *,
+    force: bool,
+    distance: float,
+    stage: str,
+) -> None:
     cfg = load_analysis_config(config_path)
     gps = read_event_from_triggers_csv(scenario, index, csv_path=triggers_csv)
     # Pre-filter detectors to avoid GWOSC fetch failures for offlined instruments
@@ -59,9 +68,13 @@ def _run_one(scenario: str, index: int, config_path: Path, triggers_csv: Path, *
             dets = ["L1"]
         else:
             dets = [cfg.detectors[0]]
-        print(f"[study] No detectors fully CAT3-online; falling back to {dets} for {gps}.")
+        print(
+            f"[study] No detectors fully CAT3-online; falling back to {dets} for {gps}."
+        )
     cfg.detectors = [d.upper() for d in dets]
-    print(f"[study] Scenario={scenario} index={index} gps={gps} stage={stage} force={force} detectors={cfg.detectors}")
+    print(
+        f"[study] Scenario={scenario} index={index} gps={gps} stage={stage} force={force} detectors={cfg.detectors}"
+    )
     res = run_event_workflow(
         cfg,
         scenario,
@@ -74,12 +87,21 @@ def _run_one(scenario: str, index: int, config_path: Path, triggers_csv: Path, *
     if res is None:
         print(f"[study] {scenario}: summary already exists; skipped analysis.")
     else:
-        print(f"[study] {scenario}: done. BCR={res.get('bcr')} logZ_signal={res.get('logZ_signal')} logZ_glitch={res.get('logZ_glitch')}")
+        print(
+            f"[study] {scenario}: done. BCR={res.get('bcr')} logZ_signal={res.get('logZ_signal')} logZ_glitch={res.get('logZ_glitch')}"
+        )
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Run LVK Starccato simulation study across three scenarios.")
-    parser.add_argument("--index", type=int, default=0, help="Row index into triggers CSV for GPS selection.")
+    parser = argparse.ArgumentParser(
+        description="Run LVK Starccato simulation study across three scenarios."
+    )
+    parser.add_argument(
+        "--index",
+        type=int,
+        default=0,
+        help="Row index into triggers CSV for GPS selection.",
+    )
     parser.add_argument(
         "--config",
         type=Path,
@@ -89,17 +111,26 @@ def main() -> None:
     parser.add_argument(
         "--triggers-csv",
         type=Path,
-        default=Path(TRIGGERS_CSV_DEFAULT),
+        required=True,
         help="CSV with paired triggers (noise_trigger, blip_trigger).",
     )
-    parser.add_argument("--distance", type=float, default=1.0, help="Injection distance scale for noise_inj.")
+    parser.add_argument(
+        "--distance",
+        type=float,
+        default=1.0,
+        help="Injection distance scale for noise_inj.",
+    )
     parser.add_argument(
         "--stage",
         choices=["prep", "analysis", "both"],
         default="both",
         help="Which stages to run (bundle prep, analysis, or both).",
     )
-    parser.add_argument("--force", action="store_true", help="Re-run analysis even if summary exists.")
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-run analysis even if summary exists.",
+    )
 
     args = parser.parse_args()
 
