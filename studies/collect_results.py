@@ -51,7 +51,13 @@ def main() -> None:
             "--expected-stop must be greater than or equal to --expected-start"
         )
 
-    files = sorted(glob.glob(str(args.outdir / "results" / "e*_*.json")))
+    files = sorted(
+        f
+        for f in glob.glob(str(args.outdir / "results" / "e*_*.json"))
+        # newSNR baseline rows live beside the odds rows; they are collected
+        # separately by chisq_baseline.py --aggregate, not here
+        if not f.endswith("_baseline.json")
+    )
     if not files:
         raise FileNotFoundError(
             f"No per-event JSONs under {args.outdir / 'results'}; "
