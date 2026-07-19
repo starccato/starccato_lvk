@@ -14,7 +14,9 @@
 #
 # Optional: RESULTS_ROOT, THROTTLE (concurrent tasks per array, default 50),
 # COHORTS (override the cohort list, entries "DETECTORS|BLIP_IFO"),
-# N_EVENTS (cap events per cohort, e.g. a pilot; default: full catalogue).
+# N_EVENTS (cap events per cohort, e.g. a pilot; default: full catalogue),
+# TASK_BUDGET (max array tasks to submit this invocation; default: detected
+# from the QOS per-user submit limit minus what is already queued).
 
 set -euo pipefail
 
@@ -37,6 +39,30 @@ if [[ -n "$(git status --porcelain)" ]]; then
   echo "Refusing to submit from a dirty Git checkout (jobs re-check this too)" >&2
   exit 2
 fi
+
+# Per-user submit-limit budget: whole cohort-class chunks that do not fit are
+# deferred to a later invocation instead of slamming into sbatch rejections.
+detect_budget() {
+  local qos limit queued
+  qos=$(sacctmgr -n show assoc user="${USER}" account="${SLURM_ACCOUNT}" \
+    format=qos 2>/dev/null | awk 'NR==1{print $1}')
+  limit=$(sacctmgr -n show qos "${qos}" format=maxsubmitpu 2>/dev/null \
+    | awk 'NR==1{print $1}')
+  queued=$(squeue -u "${USER}" -h -r 2>/dev/null | wc -l)
+  if [[ ${limit} =~ ^[0-9]+$ ]]; then
+    echo $(( limit - queued - 200 ))  # 200-task safety margin
+  else
+    echo 1000000  # no detectable limit; fail-fast on sbatch is the backstop
+  fi
+}
+BUDGET=${TASK_BUDGET:-$(detect_budget)}
+if (( BUDGET < 1 )); then
+  echo "No submission budget left (queue is full against the QOS limit)." >&2
+  echo "Re-run once jobs drain: completed work is skipped automatically." >&2
+  exit 0
+fi
+echo "Task budget this invocation: ${BUDGET}"
+DEFERRED=0
 
 n_events() {
   local csv=${DATA_DIR}/blip.csv
@@ -98,6 +124,11 @@ for spec in "${COHORT_LIST[@]}"; do
     [[ -f ${outdir}/e${i}/manifest.json ]] || prep_missing+=("${i}")
   done
   prep_dep=""
+  if (( ${#prep_missing[@]} > BUDGET )); then
+    echo "${label} prep: ${#prep_missing[@]} tasks exceed remaining budget (${BUDGET}) — deferred with its analyses"
+    DEFERRED=1
+    continue  # analyses need the manifests, so defer the whole cohort
+  fi
   if (( ${#prep_missing[@]} )); then
     if ! prep_dep=$(submit_missing prep "" "${dets}" "${blip}" "" "${prep_missing[@]}"); then
       echo "Submission stopped (sbatch failed — usually the QOS per-user job" >&2
@@ -106,6 +137,7 @@ for spec in "${COHORT_LIST[@]}"; do
       exit 3
     fi
     echo "${label} prep: ${#prep_missing[@]}/${n} events -> job(s) ${prep_dep}"
+    BUDGET=$(( BUDGET - ${#prep_missing[@]} ))
   else
     echo "${label} prep: complete (${n} events)"
   fi
@@ -119,6 +151,11 @@ for spec in "${COHORT_LIST[@]}"; do
       echo "${label} ${cls}: complete"
       continue
     fi
+    if (( ${#missing[@]} > BUDGET )); then
+      echo "${label} ${cls}: ${#missing[@]} tasks exceed remaining budget (${BUDGET}) — deferred"
+      DEFERRED=1
+      continue
+    fi
     if ! jid=$(submit_missing analysis "${cls}" "${dets}" "${blip}" "${prep_dep}" "${missing[@]}"); then
       echo "Submission stopped (sbatch failed — usually the QOS per-user job" >&2
       echo "submit limit). Everything already submitted stands; re-run this" >&2
@@ -126,5 +163,12 @@ for spec in "${COHORT_LIST[@]}"; do
       exit 3
     fi
     echo "${label} ${cls}: ${#missing[@]}/${n} tasks -> job(s) ${jid}"
+    BUDGET=$(( BUDGET - ${#missing[@]} ))
   done
 done
+
+if (( DEFERRED )); then
+  echo
+  echo "Some work was deferred to respect the QOS submit limit."
+  echo "Re-run this script once the queue drains; it submits only what is missing."
+fi
