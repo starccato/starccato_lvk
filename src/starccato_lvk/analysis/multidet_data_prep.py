@@ -5,7 +5,6 @@ import warnings
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
-import types
 
 import jax.numpy as jnp
 import numpy as np
@@ -116,32 +115,10 @@ def whitened_band_power(det: "DetectorTimeseries") -> Dict[str, float]:
     }
 
 
-DETECTOR_PRESETS = {name.upper(): det for name, det in jim_detector.get_detector_preset().items()}
-
-
-def _clone_detector(detector_name: str) -> jim_detector.GroundBased2G:
-    try:
-        template = DETECTOR_PRESETS[detector_name.upper()]
-    except KeyError as exc:  # pragma: no cover - defensive
-        raise ValueError(f"Unknown detector '{detector_name}' in jimgw.core.single_event.detector.") from exc
-    return copy.deepcopy(template)
-
-
-def _apply_no_response(detector_obj: jim_detector.GroundBased2G) -> jim_detector.GroundBased2G:
-    det_copy = copy.deepcopy(detector_obj)
-
-    def _fd_response_noresp(self, frequency, h_sky, params, **kwargs):
-        if "p" in h_sky:
-            return h_sky["p"]
-        if "c" in h_sky:
-            return h_sky["c"]
-        return jnp.zeros_like(frequency, dtype=jnp.complex64)
-
-    det_copy.fd_response = types.MethodType(_fd_response_noresp, det_copy)
-    return det_copy
-
-
-DETECTOR_PRESETS = {name.upper(): det for name, det in jim_detector.get_detector_preset().items()}
+DETECTOR_PRESETS = {
+    name.upper(): det
+    for name, det in jim_detector.get_detector_preset().items()
+}
 
 
 def _clone_detector(detector_name: str) -> jim_detector.GroundBased2G:
@@ -149,22 +126,32 @@ def _clone_detector(detector_name: str) -> jim_detector.GroundBased2G:
     try:
         template = DETECTOR_PRESETS[detector_name.upper()]
     except KeyError as exc:  # pragma: no cover - defensive
-        raise ValueError(f"Unknown detector '{detector_name}' in jimgw.core.single_event.detector.") from exc
+        raise ValueError(
+            f"Unknown detector '{detector_name}' in jimgw.core.single_event.detector."
+        ) from exc
     return copy.deepcopy(template)
 
 
-def _analysis_from_trigger(trigger_time: float, detector: str) -> Tuple[TimeSeries, FrequencySeries, TimeSeries]:
+def _analysis_from_trigger(
+    trigger_time: float, detector: str
+) -> Tuple[TimeSeries, FrequencySeries, TimeSeries]:
     """Load analysis chunk, PSD, and surrounding strain for a detector."""
-    return load_analysis_chunk_and_psd(trigger_time=trigger_time, detector=detector)
+    return load_analysis_chunk_and_psd(
+        trigger_time=trigger_time, detector=detector
+    )
 
 
-def _analysis_from_bundle(bundle_path: Path) -> Tuple[TimeSeries, FrequencySeries, Optional[TimeSeries], float]:
+def _analysis_from_bundle(
+    bundle_path: Path,
+) -> Tuple[TimeSeries, FrequencySeries, Optional[TimeSeries], float]:
     """Load analysis products from a Starccato analysis bundle file."""
     strain, psd, metadata = load_analysis_bundle(str(bundle_path))
     trigger_time = metadata.get("trigger_time")
     full_strain = metadata.get("full_strain")
     if trigger_time is None:
-        raise ValueError(f"Bundle '{bundle_path}' is missing 'trigger_time' metadata.")
+        raise ValueError(
+            f"Bundle '{bundle_path}' is missing 'trigger_time' metadata."
+        )
     return strain, psd, full_strain, float(trigger_time)
 
 
@@ -194,7 +181,9 @@ def _line_notch_mask(
     kernel = max(3, int(round(smooth_hz / df)))
     kernel += 1 - (kernel % 2)  # medfilt needs an odd kernel
     floor = medfilt(psd, kernel_size=kernel)
-    floor = np.where(floor > 0, floor, np.median(psd[psd > 0]) if np.any(psd > 0) else 1.0)
+    floor = np.where(
+        floor > 0, floor, np.median(psd[psd > 0]) if np.any(psd > 0) else 1.0
+    )
 
     is_line = (psd > threshold * floor) & band_mask
     if width_bins > 0 and is_line.any():
@@ -232,12 +221,20 @@ def _frequency_domain_representation(
 
     df = float(freq[1] - freq[0])
     zero_mean = strain_values - np.mean(strain_values)
-    alpha = min(1.0, max(0.0, 2.0 * roll_off / duration)) if duration > 0 else 0.0
+    alpha = (
+        min(1.0, max(0.0, 2.0 * roll_off / duration)) if duration > 0 else 0.0
+    )
     window = jim_data.tukey(strain_values.shape[0], alpha)
     windowed = zero_mean * window
     data_fd_full = np.fft.rfft(windowed) * dt
 
-    psd_interp = np.interp(freq, psd.frequencies.value, psd.value, left=psd.value[0], right=psd.value[-1])
+    psd_interp = np.interp(
+        freq,
+        psd.frequencies.value,
+        psd.value,
+        left=psd.value[0],
+        right=psd.value[-1],
+    )
     psd_interp = np.clip(psd_interp, np.finfo(np.float64).tiny, None)
     eps = np.finfo(np.float64).tiny
     psd_interp = np.where(psd_interp > 0, psd_interp, eps)
@@ -246,8 +243,11 @@ def _frequency_domain_representation(
     keep_mask = in_band
     if notch_lines:
         keep_mask = _line_notch_mask(
-            freq, psd_interp, in_band,
-            threshold=line_threshold, width_bins=line_width_bins,
+            freq,
+            psd_interp,
+            in_band,
+            threshold=line_threshold,
+            width_bins=line_width_bins,
         )
     # PSD seen by the LIKELIHOOD (det.psd -> sliced_psd). The likelihood evaluates over the
     # FULL rfft grid (it resets detector bounds to [0, inf] and the waveform needs the full
@@ -331,7 +331,9 @@ def prepare_multi_detector_data(
     for det in detectors:
         det_upper = det.upper()
         if bundle_paths and det_upper in bundle_paths:
-            strain, psd, _, bundle_trigger = _analysis_from_bundle(bundle_paths[det_upper])
+            strain, psd, _, bundle_trigger = _analysis_from_bundle(
+                bundle_paths[det_upper]
+            )
             if trigger_time_inferred is None:
                 trigger_time_inferred = bundle_trigger
         elif trigger_time is not None:
@@ -343,7 +345,9 @@ def prepare_multi_detector_data(
             )
 
         if trigger_time_inferred is None:
-            raise ValueError("Trigger time could not be determined from inputs.")
+            raise ValueError(
+                "Trigger time could not be determined from inputs."
+            )
 
         data = _frequency_domain_representation(
             strain=strain,
@@ -357,10 +361,14 @@ def prepare_multi_detector_data(
         if reference_window is None:
             reference_window = np.asarray(data.data.window)
         else:
-            if data.data.window.shape[0] != reference_window.shape[0] or not np.allclose(
+            if data.data.window.shape[0] != reference_window.shape[
+                0
+            ] or not np.allclose(
                 np.asarray(data.data.window), reference_window, atol=1e-6
             ):
-                raise ValueError("Window mismatch between detectors; ensure consistent data preparation.")
+                raise ValueError(
+                    "Window mismatch between detectors; ensure consistent data preparation."
+                )
 
         wp = whitened_band_power(data)
         if wp["median"] > WHITENED_POWER_WARN:
@@ -377,21 +385,33 @@ def prepare_multi_detector_data(
     # Consistency checks across detectors
     sample_rates = {d.name: 1.0 / d.dt for d in detector_data.values()}
     if len(set(round(v, 9) for v in sample_rates.values())) != 1:
-        raise ValueError(f"Sample rates differ across detectors: {sample_rates}")
+        raise ValueError(
+            f"Sample rates differ across detectors: {sample_rates}"
+        )
 
-    freq_shapes = {d.name: d.frequency.shape[0] for d in detector_data.values()}
+    freq_shapes = {
+        d.name: d.frequency.shape[0] for d in detector_data.values()
+    }
     if len(set(freq_shapes.values())) != 1:
-        raise ValueError(f"Frequency grid lengths differ across detectors: {freq_shapes}")
+        raise ValueError(
+            f"Frequency grid lengths differ across detectors: {freq_shapes}"
+        )
 
     dfs = {d.name: d.df for d in detector_data.values()}
     if len(set(round(v, 12) for v in dfs.values())) != 1:
-        raise ValueError(f"Frequency resolution differs across detectors: {dfs}")
+        raise ValueError(
+            f"Frequency resolution differs across detectors: {dfs}"
+        )
 
     duration = detector_data[next(iter(detector_data))].data.duration
     post_trigger_duration = duration / 2.0
     df = next(iter(detector_data.values())).df
 
-    gmst = Time(trigger_time_inferred, format="gps").sidereal_time("apparent", "greenwich").rad
+    gmst = (
+        Time(trigger_time_inferred, format="gps")
+        .sidereal_time("apparent", "greenwich")
+        .rad
+    )
 
     prepared_detectors: List[jim_detector.GroundBased2G] = []
     for det_name, data in detector_data.items():
@@ -409,6 +429,10 @@ def prepare_multi_detector_data(
         post_trigger_duration=float(post_trigger_duration),
         df=float(df),
         gmst=float(gmst),
-        window=np.asarray(reference_window, dtype=np.float64) if reference_window is not None else None,
+        window=(
+            np.asarray(reference_window, dtype=np.float64)
+            if reference_window is not None
+            else None
+        ),
         roll_off=float(roll_off),
     )

@@ -22,12 +22,13 @@ from ..acquisition.io.glitch_catalog import get_blip_trigger_time
 
 _PACKAGE_ROOT = Path(__file__).resolve().parents[3]
 _SLURM_ROOT = _PACKAGE_ROOT / "slurm"
-if not _SLURM_ROOT.exists():  # pragma: no cover - fallback for non-repo installs
+if (
+    not _SLURM_ROOT.exists()
+):  # pragma: no cover - fallback for non-repo installs
     _SLURM_ROOT = Path("slurm")
 
 CONFIG_DEFAULT = _SLURM_ROOT / "configs/analysis.yaml"
 EVENTS_DIR_DEFAULT = _SLURM_ROOT / "configs"
-TRIGGERS_CSV_DEFAULT = _PACKAGE_ROOT / "src/starccato_lvk/acquisition/io/data/triggers.csv"
 
 
 @dataclass
@@ -139,14 +140,18 @@ def prepare_event_lists_from_files(
     )
 
 
-def read_event_list(scenario: str, index: int, *, root: Path = EVENTS_DIR_DEFAULT) -> float:
+def read_event_list(
+    scenario: str, index: int, *, root: Path = EVENTS_DIR_DEFAULT
+) -> float:
     list_path = root / f"events_{scenario}.txt"
     if not list_path.exists():
         raise FileNotFoundError(f"Event list {list_path} missing.")
     with list_path.open("r") as f:
         lines = [line.strip() for line in f.readlines() if line.strip()]
     if index < 0 or index >= len(lines):
-        raise IndexError(f"Index {index} out of range for {scenario} list (len={len(lines)}).")
+        raise IndexError(
+            f"Index {index} out of range for {scenario} list (len={len(lines)})."
+        )
     return float(lines[index])
 
 
@@ -162,7 +167,9 @@ def read_event_from_triggers_csv(
             f"Triggers CSV must contain columns {required_cols}, found {set(df.columns)}"
         )
     if index < 0 or index >= len(df):
-        raise IndexError(f"Index {index} out of range for triggers CSV (len={len(df)}).")
+        raise IndexError(
+            f"Index {index} out of range for triggers CSV (len={len(df)})."
+        )
     if scenario == "blip":
         return float(df.loc[index, "blip_trigger"])
     else:  # "noise" or "noise_inj"
@@ -170,7 +177,11 @@ def read_event_from_triggers_csv(
 
 
 def prepare_bundles(
-    detectors: Sequence[str], gps: float, output_dir: Path, *, require_cat3: bool = True
+    detectors: Sequence[str],
+    gps: float,
+    output_dir: Path,
+    *,
+    require_cat3: bool = True,
 ) -> Dict[str, Path]:
     output_dir.mkdir(parents=True, exist_ok=True)
     bundle_map: Dict[str, Path] = {}
@@ -182,10 +193,17 @@ def prepare_bundles(
         if bundles:
             bundle_map[det_name] = bundles[0]
             continue
-        strain_loader(trigger_time=gps, outdir=det_dir, detector=det_name, require_cat3=require_cat3)
+        strain_loader(
+            trigger_time=gps,
+            outdir=det_dir,
+            detector=det_name,
+            require_cat3=require_cat3,
+        )
         bundles = list(det_dir.glob("analysis_bundle_*.hdf5"))
         if not bundles:
-            raise FileNotFoundError(f"No bundle found for {det_name} at gps {gps}")
+            raise FileNotFoundError(
+                f"No bundle found for {det_name} at gps {gps}"
+            )
         bundle_map[det_name] = bundles[0]
     return bundle_map
 
@@ -310,24 +328,51 @@ def run_event_workflow(
     if stage in ("prep", "both"):
         if scenario == "noise_inj":
             # Prefer reusing existing noise bundles to avoid duplicate downloads
-            bundle_paths = _find_existing_noise_bundles(cfg.detectors, gps, cfg.output_root)
+            bundle_paths = _find_existing_noise_bundles(
+                cfg.detectors, gps, cfg.output_root
+            )
             if bundle_paths is None:
-                bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir, require_cat3=require_cat3)
+                bundle_paths = prepare_bundles(
+                    cfg.detectors, gps, bundles_dir, require_cat3=require_cat3
+                )
             injected_dir = scenario_dir / "bundles_injected"
-            bundle_paths = inject_signal(bundle_paths, gps, cfg, injected_dir, distance_scale=injection_distance)
+            bundle_paths = inject_signal(
+                bundle_paths,
+                gps,
+                cfg,
+                injected_dir,
+                distance_scale=injection_distance,
+            )
         else:
-            bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir, require_cat3=require_cat3)
+            bundle_paths = prepare_bundles(
+                cfg.detectors, gps, bundles_dir, require_cat3=require_cat3
+            )
 
     if stage in ("analysis", "both"):
         if bundle_paths is None:
             if scenario == "noise_inj":
-                bundle_paths = _find_existing_noise_bundles(cfg.detectors, gps, cfg.output_root)
+                bundle_paths = _find_existing_noise_bundles(
+                    cfg.detectors, gps, cfg.output_root
+                )
                 if bundle_paths is None:
-                    bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir, require_cat3=require_cat3)
+                    bundle_paths = prepare_bundles(
+                        cfg.detectors,
+                        gps,
+                        bundles_dir,
+                        require_cat3=require_cat3,
+                    )
                 injected_dir = scenario_dir / "bundles_injected"
-                bundle_paths = inject_signal(bundle_paths, gps, cfg, injected_dir, distance_scale=injection_distance)
+                bundle_paths = inject_signal(
+                    bundle_paths,
+                    gps,
+                    cfg,
+                    injected_dir,
+                    distance_scale=injection_distance,
+                )
             else:
-                bundle_paths = prepare_bundles(cfg.detectors, gps, bundles_dir, require_cat3=require_cat3)
+                bundle_paths = prepare_bundles(
+                    cfg.detectors, gps, bundles_dir, require_cat3=require_cat3
+                )
 
         outdir = scenario_dir / "analysis"
         outdir.mkdir(parents=True, exist_ok=True)
@@ -338,7 +383,9 @@ def run_event_workflow(
         result = run_bcr_posteriors(
             detectors=cfg.detectors,
             outdir=str(outdir),
-            bundle_paths={det: str(path) for det, path in bundle_paths.items()},
+            bundle_paths={
+                det: str(path) for det, path in bundle_paths.items()
+            },
             signal_model=cfg.signal_model,
             glitch_model=cfg.glitch_model,
             extrinsic_params=None,
@@ -365,8 +412,18 @@ def run_event_workflow(
 
 
 @click.command(name="starccato_lvk_run_event")
-@click.option("--scenario", type=click.Choice(["blip", "noise", "noise_inj"]), required=True)
-@click.option("--index", "event_index", type=int, required=True, help="Event index (e.g. SLURM_ARRAY_TASK_ID).")
+@click.option(
+    "--scenario",
+    type=click.Choice(["blip", "noise", "noise_inj"]),
+    required=True,
+)
+@click.option(
+    "--index",
+    "event_index",
+    type=int,
+    required=True,
+    help="Event index (e.g. SLURM_ARRAY_TASK_ID).",
+)
 @click.option(
     "--config",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -387,8 +444,16 @@ def run_event_workflow(
     default=None,
     help="Optional CSV with paired triggers (noise_trigger, blip_trigger). Overrides events-dir if given.",
 )
-@click.option("--force", is_flag=True, help="Re-run analysis even if summary exists.")
-@click.option("--distance", type=float, default=1.0, show_default=True, help="Injection distance scale for noise_inj scenario.")
+@click.option(
+    "--force", is_flag=True, help="Re-run analysis even if summary exists."
+)
+@click.option(
+    "--distance",
+    type=float,
+    default=1.0,
+    show_default=True,
+    help="Injection distance scale for noise_inj scenario.",
+)
 @click.option(
     "--stage",
     type=click.Choice(["prep", "analysis", "both"]),
@@ -408,11 +473,10 @@ def cli_run_event(
 ) -> None:
     """Run Starccato LVK analysis for a single event."""
     cfg = load_analysis_config(config)
-    # Resolve GPS from triggers CSV if provided or available at default path
-    if triggers_csv is None and TRIGGERS_CSV_DEFAULT.exists():
-        triggers_csv = TRIGGERS_CSV_DEFAULT
     if triggers_csv is not None:
-        gps = read_event_from_triggers_csv(scenario, event_index, csv_path=triggers_csv)
+        gps = read_event_from_triggers_csv(
+            scenario, event_index, csv_path=triggers_csv
+        )
     else:
         gps = read_event_list(scenario, event_index, root=events_dir)
     result = run_event_workflow(
@@ -425,7 +489,9 @@ def cli_run_event(
         stage=stage,
     )
     if result is None:
-        click.echo("Workflow complete: summary already existed; no new analysis performed.")
+        click.echo(
+            "Workflow complete: summary already existed; no new analysis performed."
+        )
     else:
         click.echo(f"Workflow complete: BCR={result.get('bcr')}")
 
@@ -438,7 +504,13 @@ def cli_run_event(
     show_default=True,
     help="Directory to write scenario event lists.",
 )
-@click.option("--blip-count", type=int, default=200, show_default=True, help="Number of blip glitches to record.")
+@click.option(
+    "--blip-count",
+    type=int,
+    default=200,
+    show_default=True,
+    help="Number of blip glitches to record.",
+)
 @click.option(
     "--noise-file",
     type=click.Path(exists=True, dir_okay=False, path_type=Path),
@@ -451,7 +523,12 @@ def cli_run_event(
     default=None,
     help="Optional text file with noise+injection GPS times (defaults to noise file).",
 )
-def cli_generate_events(outdir: Path, blip_count: int, noise_file: Path, noise_inj_file: Optional[Path]) -> None:
+def cli_generate_events(
+    outdir: Path,
+    blip_count: int,
+    noise_file: Path,
+    noise_inj_file: Optional[Path],
+) -> None:
     """Generate event lists used by the workflow CLI."""
     prepare_event_lists_from_files(
         outdir,
@@ -463,11 +540,17 @@ def cli_generate_events(outdir: Path, blip_count: int, noise_file: Path, noise_i
 
 
 def generate_events_main(argv: Optional[Sequence[str]] = None) -> None:
-    cli_generate_events.main(args=list(argv) if argv is not None else None, prog_name="starccato_lvk_generate_events")
+    cli_generate_events.main(
+        args=list(argv) if argv is not None else None,
+        prog_name="starccato_lvk_generate_events",
+    )
 
 
 def main(argv: Optional[Sequence[str]] = None) -> None:
-    cli_run_event.main(args=list(argv) if argv is not None else None, prog_name="starccato_lvk_run_event")
+    cli_run_event.main(
+        args=list(argv) if argv is not None else None,
+        prog_name="starccato_lvk_run_event",
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover - module execution helper

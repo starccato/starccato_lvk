@@ -143,6 +143,15 @@ def test_collect_results_defaults_to_production_classes(tmp_path, monkeypatch):
                 }
             )
         )
+        (results_dir / f"e0_{event_class}_baseline.json").write_text(
+            json.dumps(
+                {
+                    "index": 0,
+                    "cls": event_class,
+                    "mf_snr": 1.0,
+                }
+            )
+        )
 
     monkeypatch.setattr(
         sys,

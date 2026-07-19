@@ -31,4 +31,4 @@ analysis:
   ci:
     - 5
     - 95
-output_root: lvk/slurm/out
+output_root: slurm/out

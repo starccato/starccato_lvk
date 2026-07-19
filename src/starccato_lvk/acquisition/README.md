@@ -10,7 +10,7 @@ The primary entry point is the acquisition CLI:
 
 ```bash
 # Acquire N samples (noise + blip) into ./lvk_data
-collect_lvk_data 100
+uv run starccato-lvk acquire batch 100 --outdir ./lvk_data
 ```
 
 Each trigger produces:

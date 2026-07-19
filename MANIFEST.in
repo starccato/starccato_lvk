@@ -1,0 +1,4 @@
+prune out_ff
+prune out_pp
+prune out_rn_figs
+prune slurm/out
