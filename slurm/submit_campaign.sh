@@ -65,13 +65,18 @@ submit_missing() {
     exports="ALL,CAMPAIGN_ID=${CAMPAIGN_ID},RESULTS_ROOT=${RESULTS_ROOT}"
     exports+=",DETECTORS=${dets},BLIP_IFO=${blip},STAGE=${stage},INDEX_OFFSET=${off}"
     [[ -n ${cls} ]] && exports+=",CLASS=${cls}"
+    # command substitution does not inherit errexit, so failures (typically
+    # QOSMaxSubmitJobPerUserLimit) must be caught explicitly or the script
+    # would submit dependent arrays against empty job ids
     if [[ -n ${dep} ]]; then
       jid=$(sbatch --parsable --account="${SLURM_ACCOUNT}" \
         --dependency="afterany:${dep}" \
-        --array="${list%,}%${THROTTLE}" --export="${exports}" slurm/real_noise.sh)
+        --array="${list%,}%${THROTTLE}" --export="${exports}" slurm/real_noise.sh) \
+        || exit 3
     else
       jid=$(sbatch --parsable --account="${SLURM_ACCOUNT}" \
-        --array="${list%,}%${THROTTLE}" --export="${exports}" slurm/real_noise.sh)
+        --array="${list%,}%${THROTTLE}" --export="${exports}" slurm/real_noise.sh) \
+        || exit 3
     fi
     jobids+="${jid}:"
   done
@@ -94,7 +99,12 @@ for spec in "${COHORT_LIST[@]}"; do
   done
   prep_dep=""
   if (( ${#prep_missing[@]} )); then
-    prep_dep=$(submit_missing prep "" "${dets}" "${blip}" "" "${prep_missing[@]}")
+    if ! prep_dep=$(submit_missing prep "" "${dets}" "${blip}" "" "${prep_missing[@]}"); then
+      echo "Submission stopped (sbatch failed — usually the QOS per-user job" >&2
+      echo "submit limit). Everything already submitted stands; re-run this" >&2
+      echo "script once the queue drains to submit the remainder." >&2
+      exit 3
+    fi
     echo "${label} prep: ${#prep_missing[@]}/${n} events -> job(s) ${prep_dep}"
   else
     echo "${label} prep: complete (${n} events)"
@@ -109,7 +119,12 @@ for spec in "${COHORT_LIST[@]}"; do
       echo "${label} ${cls}: complete"
       continue
     fi
-    jid=$(submit_missing analysis "${cls}" "${dets}" "${blip}" "${prep_dep}" "${missing[@]}")
+    if ! jid=$(submit_missing analysis "${cls}" "${dets}" "${blip}" "${prep_dep}" "${missing[@]}"); then
+      echo "Submission stopped (sbatch failed — usually the QOS per-user job" >&2
+      echo "submit limit). Everything already submitted stands; re-run this" >&2
+      echo "script once the queue drains to submit the remainder." >&2
+      exit 3
+    fi
     echo "${label} ${cls}: ${#missing[@]}/${n} tasks -> job(s) ${jid}"
   done
 done
