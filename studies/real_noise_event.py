@@ -382,6 +382,7 @@ def analyse_manifest(
     max_tree_depth=10,
     map_num_starts=128,
     map_maxiter=400,
+    save_artifacts=False,
 ) -> None:
     detectors = manifest["detectors"]
     flow, fmax = manifest["band"]
@@ -461,7 +462,7 @@ def analyse_manifest(
                 map_num_starts=map_num_starts,
                 map_maxiter=map_maxiter,
                 rng_seed=rng_seed,
-                save_artifacts=False,
+                save_artifacts=save_artifacts,
                 save_diagnostics=True,
                 lnz_method="morph",
                 noise_scale_marginal=nsm,
@@ -629,6 +630,13 @@ def main() -> None:
         action="store_true",
         help="Rebuild an existing manifest and its prepared bundles.",
     )
+    p.add_argument(
+        "--save-artifacts",
+        action="store_true",
+        help="Write per-class signal/samples.npz posterior draws (needed by "
+             "studies/plot_waveform_reconstruction.py). Off by default because "
+             "a full population run would emit hundreds of these.",
+    )
     args = p.parse_args()
 
     detectors = [d.upper() for d in args.detectors]
@@ -771,6 +779,7 @@ def main() -> None:
             max_tree_depth=args.max_tree_depth,
             map_num_starts=args.map_num_starts,
             map_maxiter=args.map_maxiter,
+            save_artifacts=args.save_artifacts,
         )
         # newSNR/chi^2 baseline: seconds per class, no sampling. Runs on every
         # prepared class (skips existing rows), so the last class task to
