@@ -4,7 +4,8 @@ Reads ``campaign_event_metrics.csv`` (one row per class/event/configuration) and
 writes the publication figures plus ``summary_table.tex`` and ``metrics.json``:
 
     fig_confusion.pdf     three-class confusion matrices (CCSN / blip / noise)
-    fig_roc.pdf           ROC, ln O versus reweighted matched-filter SNR
+    fig_roc.pdf           ROC (bootstrap median + 68% band), ln O versus
+                          reweighted matched-filter SNR
     fig_efficiency.pdf    detection efficiency versus injected network SNR
     summary_table.tex     AUC + misclassification table for \\input{}
     metrics.json          every number quoted in the text
@@ -150,6 +151,44 @@ def auc_with_err(
     return point, float(np.std(vals))
 
 
+def _roc_band(
+    pos: np.ndarray,
+    neg: np.ndarray,
+    pos_events: np.ndarray,
+    neg_events: np.ndarray,
+    fap_grid: np.ndarray,
+    n_boot: int = 400,
+    seed: int = 0,
+):
+    """Block-bootstrap ROC as (median, lo, hi) detection efficiency on fap_grid.
+
+    Resamples whole events (the three classes at a trigger share a noise
+    segment), draws the exact ROC each time, and evaluates it on a common
+    false-alarm grid. A near-perfect classifier on a finite background gives a
+    staircase with big discrete jumps that reads as an artefact of the sample
+    size rather than the statistic, so we report the bootstrap median and
+    central 68% interval instead of the raw curve.
+    """
+    m = np.isfinite(pos)
+    pos, pos_events = pos[m], pos_events[m]
+    m = np.isfinite(neg)
+    neg, neg_events = neg[m], neg_events[m]
+    pos_by = {e: pos[pos_events == e] for e in np.unique(pos_events)}
+    neg_by = {e: neg[neg_events == e] for e in np.unique(neg_events)}
+    events = np.unique(np.concatenate([pos_events, neg_events]))
+    rng = np.random.default_rng(seed)
+    empty = np.empty(0)
+    tprs = []
+    for _ in range(n_boot):
+        pick = rng.choice(events, events.size, replace=True)
+        p = np.concatenate([pos_by.get(e, empty) for e in pick])
+        n = np.concatenate([neg_by.get(e, empty) for e in pick])
+        if p.size and n.size:
+            fpr, tpr = _roc_curve(p, n)
+            tprs.append(np.interp(fap_grid, fpr, tpr))
+    return np.percentile(np.asarray(tprs), [50, 16, 84], axis=0)
+
+
 def fig_confusion(df: pd.DataFrame, out: Path) -> dict:
     """Row-normalised three-class confusion matrices, one panel per network."""
     cmap = LinearSegmentedColormap.from_list("bl", ["#ffffff", "#1b6ca8"])
@@ -206,17 +245,21 @@ def fig_roc(df: pd.DataFrame, out: Path) -> dict:
             ("log_odds", r"$\ln\mathcal{O}$"),
             ("new_snr", r"$\rho_{\rm new}$"),
         ):
-            pos = sub[sub["class"] == "inj_ccsn"][score].to_numpy()
-            neg = sub[sub["class"] != "inj_ccsn"][score].to_numpy()
-            m = np.isfinite(pos)
-            pos = pos[m]
-            neg = neg[np.isfinite(neg)]
-            x, y = _roc_curve(pos, neg)
+            sig_rows = sub[sub["class"] == "inj_ccsn"]
+            bkg_rows = sub[sub["class"] != "inj_ccsn"]
             a, err = auc_with_err(sub, score, ["noise", "real_glitch"])
             summary[grp][score] = {"auc": a, "auc_err": err}
+            med, lo, hi = _roc_band(
+                sig_rows[score].to_numpy(),
+                bkg_rows[score].to_numpy(),
+                sig_rows["event"].to_numpy(),
+                bkg_rows["event"].to_numpy(),
+                fap,
+            )
+            ax.fill_between(fap, lo, hi, color=COLOR[score], alpha=0.2, lw=0)
             ax.plot(
-                np.clip(x, fap[0], 1),
-                y,
+                fap,
+                med,
                 color=COLOR[score],
                 lw=1.4,
                 label=f"{label}  AUC $={a:.3f}\\pm{err:.3f}$",
