@@ -4,8 +4,9 @@ Reads ``campaign_event_metrics.csv`` (one row per class/event/configuration) and
 writes the publication figures plus ``summary_table.tex`` and ``metrics.json``:
 
     fig_confusion.pdf     three-class confusion matrices (CCSN / blip / noise)
-    fig_roc.pdf           ROC (bootstrap median + 68% band), ln O versus
-                          reweighted matched-filter SNR
+    fig_roc.pdf           ROC (bootstrap median + 68% band), ln O versus the
+                          reweighted matched-filter statistic SNR* (displayed
+                          as such; the CSV/JSON field remains "new_snr")
     fig_efficiency.pdf    detection efficiency versus injected network SNR
     summary_table.tex     AUC + misclassification table for \\input{}
     metrics.json          every number quoted in the text
@@ -243,7 +244,7 @@ def fig_roc(df: pd.DataFrame, out: Path) -> dict:
         summary[grp] = {}
         for score, label in (
             ("log_odds", r"$\ln\mathcal{O}$"),
-            ("new_snr", r"$\rho_{\rm new}$"),
+            ("new_snr", r"$\mathrm{SNR}^{*}$"),
         ):
             sig_rows = sub[sub["class"] == "inj_ccsn"]
             bkg_rows = sub[sub["class"] != "inj_ccsn"]
@@ -365,7 +366,7 @@ def write_table(df: pd.DataFrame, out: Path, table_path: Path) -> dict:
     lines = [
         r"\begin{tabular}{llcc}",
         r"\hline\hline",
-        r"Network & Background & AUC($\ln\mathcal{O}$) & AUC($\rho_{\rm new}$) \\",
+        r"Network & Background & AUC($\ln\mathcal{O}$) & AUC($\mathrm{SNR}^{*}$) \\",
         r"\hline",
     ]
     for grp in GROUPS:
