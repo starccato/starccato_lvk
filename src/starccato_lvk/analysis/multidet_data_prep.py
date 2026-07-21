@@ -407,9 +407,12 @@ def prepare_multi_detector_data(
     post_trigger_duration = duration / 2.0
     df = next(iter(detector_data.values())).df
 
+    # MEAN sidereal time: jimgw's delay_from_geocenter/antenna_pattern follow the
+    # LAL GMST convention. "apparent" (GAST) differs by the equation of the
+    # equinoxes (~7e-5 rad, well under 1 us of delay) -- negligible, but wrong.
     gmst = (
         Time(trigger_time_inferred, format="gps")
-        .sidereal_time("apparent", "greenwich")
+        .sidereal_time("mean", "greenwich")
         .rad
     )
 

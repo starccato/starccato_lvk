@@ -161,8 +161,13 @@ def _inject_through_recovery(prep, cls: str, target_snr: float, n_seg: int, dt: 
         td = _center_pad(np.asarray(raw_wf, dtype=np.float64), n_seg) * 1e-21 * np.asarray(prep.window)
         h_sky_unit = jnp.fft.rfft(jnp.asarray(td)) * dt
 
+        # h_x = 0 for the plus-polarized (2D axisymmetric) CCSN source, matching
+        # StarccatoJimWaveform. For cls == "glitch" the no-response detector reads
+        # only "p", so this is a no-op on that path.
+        h_zero = jnp.zeros_like(h_sky_unit)
+
         def _hdec(amp):
-            hs = {"p": h_sky_unit * amp, "c": h_sky_unit * amp}
+            hs = {"p": h_sky_unit * amp, "c": h_zero}
             return np.asarray(det.fd_response(fj, hs, resp_params))
         hdec0 = _hdec(1.0)
         snr_unit = float(np.sqrt(4.0 * np.sum(np.abs(hdec0[band]) ** 2 / psd_full[band]) * df))

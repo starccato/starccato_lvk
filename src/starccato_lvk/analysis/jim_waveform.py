@@ -110,7 +110,11 @@ class StarccatoJimWaveform(Waveform):
 
         waveform_td = self._time_domain_waveform(params)
         waveform_fd = jnp.fft.rfft(waveform_td) * self.dt
-        return {"p": waveform_fd, "c": waveform_fd}
+        # h_x = 0: the Richers+2017 training catalogue is 2D AXISYMMETRIC rotating
+        # core collapse, and an axisymmetric source emits only the plus
+        # polarization (h_+ ~ sin^2(theta)/D). psi is then the orientation of the
+        # projected rotation axis. Injections must use the same convention.
+        return {"p": waveform_fd, "c": jnp.zeros_like(waveform_fd)}
 
     # ------------------------------------------------------------------
     # Convenience helpers for diagnostics / plotting

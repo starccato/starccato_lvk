@@ -69,14 +69,31 @@ def _snr(hdec: np.ndarray, psd_full: np.ndarray, band: np.ndarray, df: float) ->
     return float(np.sqrt(4.0 * np.sum(np.abs(hdec[band]) ** 2 / psd_full[band]) * df))
 
 
-def _inject_coherent(prep, target_net_snr: float, n_seg: int, dt: float,
+def _inject_coherent(prep, target_snr: float, n_seg: int, dt: float,
                      flow: float, fmax: float, raw_wf,
-                     sky: Optional[dict] = None) -> tuple[Dict[str, np.ndarray], float]:
-    """Inject ONE CCSN coherently across all detectors, scaled to a network SNR.
+                     sky: Optional[dict] = None,
+                     snr_reference_det: Optional[str] = None,
+                     ) -> tuple[Dict[str, np.ndarray], float]:
+    """Inject ONE CCSN coherently across all detectors, at a chosen amplitude scale.
 
     ``sky`` gives the source direction (ra/dec/psi/t_c); default is the network
     zenith (0,0,0). For a realistic targeted study pass an isotropic draw and
     recover at the SAME sky (extrinsic_params) -- see studies/real_noise_event.py.
+
+    ``snr_reference_det`` selects what ``target_snr`` means, and this choice
+    decides which scientific question the campaign answers:
+
+    - ``None`` (network normalisation): the amplitude is set so the NETWORK SNR
+      equals the target. Adding a detector then REDISTRIBUTES a fixed budget
+      rather than adding signal, so a one- vs two-detector comparison built this
+      way asks "is spreading fixed SNR better?" -- not what a real search does.
+    - a detector name (reference normalisation): the amplitude is set so THAT
+      detector reaches the target and every other detector contributes whatever
+      its antenna pattern gives. The network SNR is then an OUTPUT. This is the
+      fixed-source comparison: identical strain in the reference detector, plus
+      a detector.
+
+    Returns the injections and the ACHIEVED network SNR in both cases.
     """
     full_freqs = np.fft.rfftfreq(n_seg, d=dt)
     fj = jnp.asarray(full_freqs)
@@ -86,12 +103,31 @@ def _inject_coherent(prep, target_net_snr: float, n_seg: int, dt: float,
     sky = {"t_c": 0.0, "ra": 0.0, "dec": 0.0, "psi": 0.0, **(sky or {})}
     sky.update(gmst=float(prep.gmst), trigger_time=float(prep.trigger_time))
 
-    unit_hdec, net_sq = {}, 0.0
+    # h_x = 0 -- the CCSN catalogue is 2D axisymmetric, so the source is plus-
+    # polarized and psi is the projected rotation-axis orientation. Matches the
+    # recovery model (StarccatoJimWaveform).
+    h_zero = jnp.zeros_like(h_sky)
+    unit_hdec, unit_snr, net_sq = {}, {}, 0.0
     for det in prep.detectors:
-        hd = np.asarray(det.fd_response(fj, {"p": h_sky, "c": h_sky}, sky))
+        hd = np.asarray(det.fd_response(fj, {"p": h_sky, "c": h_zero}, sky))
         unit_hdec[det.name] = hd
-        net_sq += _snr(hd, np.asarray(det.psd.values), band, df) ** 2
-    amp = target_net_snr / np.sqrt(net_sq)
+        unit_snr[det.name] = _snr(hd, np.asarray(det.psd.values), band, df)
+        net_sq += unit_snr[det.name] ** 2
+    if snr_reference_det is None:
+        amp = target_snr / np.sqrt(net_sq)
+    else:
+        reference = snr_reference_det.upper()
+        if reference not in unit_snr:
+            raise ValueError(
+                f"snr_reference_det={reference} is not among the prepared "
+                f"detectors {sorted(unit_snr)}"
+            )
+        if unit_snr[reference] <= 0.0:
+            raise ValueError(
+                f"{reference} has zero response at this sky location; the "
+                "injection amplitude cannot be normalised on it"
+            )
+        amp = target_snr / unit_snr[reference]
 
     inj, net_sq2 = {}, 0.0
     for det in prep.detectors:
@@ -99,6 +135,27 @@ def _inject_coherent(prep, target_net_snr: float, n_seg: int, dt: float,
         inj[det.name] = np.fft.irfft(hd, n=n_seg) / dt
         net_sq2 += _snr(hd, np.asarray(det.psd.values), band, df) ** 2
     return inj, float(np.sqrt(net_sq2))
+
+
+def per_detector_snr(prep, injection_td: Dict[str, np.ndarray], n_seg: int, dt: float,
+                     flow: float, fmax: float) -> Dict[str, float]:
+    """Injected optimal SNR in EACH detector, in the likelihood's own convention.
+
+    The network SNR alone hides how the signal is split. With h_x = 0 the H1:L1
+    amplitude ratio is fixed by F_plus, so some sky/psi draws put nearly all the
+    power in one detector -- and such events are legitimately better explained by
+    an incoherent (glitch) model. Analyses must be able to condition on the split,
+    and single-detector analyses must be reported against the detector's OWN SNR
+    rather than the network target.
+    """
+    freqs = np.fft.rfftfreq(n_seg, d=dt)
+    df = float(freqs[1] - freqs[0])
+    band = (freqs >= flow) & (freqs <= fmax)
+    out = {}
+    for det in prep.detectors:
+        hd = np.fft.rfft(injection_td[det.name]) * dt
+        out[det.name] = _snr(hd, np.asarray(det.psd.values), band, df)
+    return out
 
 
 def _inject_single_glitch(prep, gdet_name: str, target_snr: float, n_seg: int, dt: float,
