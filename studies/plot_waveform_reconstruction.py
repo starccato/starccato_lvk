@@ -27,6 +27,7 @@ morphology, which is what the odds ratio discriminates on.
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import numpy as np
@@ -115,8 +116,29 @@ def _time_axis(wf: np.ndarray, fs: float) -> np.ndarray:
     return (np.arange(wf.shape[1]) - int(np.argmax(np.abs(med)))) / fs * 1e3
 
 
+def bayeswave_evidence_label(post_signal_dir: Path) -> str | None:
+    """Read the run's result.json (two levels up from post/signal) for a caption.
+
+    Read rather than passed in, so the annotated numbers cannot drift away from
+    the reconstruction plotted beside them. Returns None when the run has no
+    usable evidence, which is the common case for a partially-failed run.
+    """
+    result = Path(post_signal_dir).resolve().parent.parent / "result.json"
+    if not result.is_file():
+        return None
+    d = json.loads(result.read_text())
+    lnbf, unc = (d.get("log_bayeswave_signal_glitch"),
+                 d.get("log_bayeswave_signal_glitch_uncertainty"))
+    if lnbf is None or unc is None:
+        return None
+    sig_noise = d.get("logZ_signal", 0.0) - d.get("logZ_noise", 0.0)
+    return (rf"BayesWave: $\ln\mathcal{{B}}_{{\rm S/G}}={lnbf:.1f}\pm{unc:.1f}$"
+            "\n" rf"$\ln Z_{{\rm S}}-\ln Z_{{\rm N}}={sig_noise:+.1f}$")
+
+
 def make_plot(our: np.ndarray, bw: np.ndarray | None, truth: np.ndarray | None,
-              out: Path, fs: float = 4096.0, bw_fs: float = 2048.0) -> None:
+              out: Path, fs: float = 4096.0, bw_fs: float = 2048.0,
+              caption: str | None = None) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -134,6 +156,10 @@ def make_plot(our: np.ndarray, bw: np.ndarray | None, truth: np.ndarray | None,
         ax.plot(t, tr, color="k", ls="--", lw=1.2, label="injected")
     ax.set_xlabel("time relative to peak [ms]")
     ax.set_ylabel("peak-normalized strain")
+    if caption:
+        ax.text(0.02, 0.03, caption, transform=ax.transAxes, fontsize=7,
+                va="bottom", ha="left",
+                bbox=dict(boxstyle="round,pad=0.35", fc="white", ec="0.7", lw=0.5))
     ax.legend(frameon=False, fontsize=8)
     ax.margins(x=0)
     fig.tight_layout()
@@ -176,7 +202,9 @@ def main() -> None:
     bw = (bayeswave_waveform_draws(args.bayeswave_post, ifo=args.ifo)
           if args.bayeswave_post else None)
     truth = np.load(args.truth) if args.truth else None
-    make_plot(our, bw, truth, args.out)
+    caption = (bayeswave_evidence_label(args.bayeswave_post)
+               if args.bayeswave_post else None)
+    make_plot(our, bw, truth, args.out, caption=caption)
 
 
 if __name__ == "__main__":

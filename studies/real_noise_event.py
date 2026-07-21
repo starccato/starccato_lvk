@@ -47,15 +47,23 @@ from starccato_lvk.acquisition.io.glitch_catalog import (
 from chisq_baseline import run_index as run_baseline_index
 from real_noise_io import build_bundle, inject_into_bundle
 from snr_vs_odds_roc import SAMPLE_RATE
-from snr_vs_odds_roc_coherent import _inject_coherent, _inject_single_glitch
+from snr_vs_odds_roc_coherent import (
+    _inject_coherent,
+    _inject_single_glitch,
+    per_detector_snr,
+)
 
 from starccato_jax.data.training_data import TrainValData
 from starccato_jax.waveforms import get_model
 
 CLASSES = ("noise", "inj_ccsn", "inj_glitch", "real_glitch")
 PRODUCTION_CLASSES = ("noise", "inj_ccsn", "real_glitch")
-MANIFEST_SCHEMA_VERSION = 2
-RESULT_SCHEMA_VERSION = 2
+# v3: injections are plus-polarized (h_x = 0, 2D-axisymmetric source) and the
+# manifest records snr_by_detector. A v2 manifest was built with the old
+# h_+ = h_x convention, so it MUST NOT be analysed with the current recovery
+# model -- the version check below is what enforces that.
+MANIFEST_SCHEMA_VERSION = 3
+RESULT_SCHEMA_VERSION = 3
 CLASS_SEED_OFFSET = {
     "noise": 1,
     "inj_ccsn": 2,
@@ -171,6 +179,7 @@ def prep_index(
     blip_ifo="L1",
     classes: Iterable[str] = PRODUCTION_CLASSES,
     campaign_id: str | None = None,
+    snr_reference_det: str | None = None,
 ) -> dict:
     """Build only the requested event classes and write a versioned manifest."""
     classes = tuple(dict.fromkeys(classes))
@@ -241,12 +250,14 @@ def prep_index(
 
     bundles: dict[str, dict[str, str]] = {}
     snr: dict[str, float] = {}
+    snr_by_detector: dict[str, dict[str, float]] = {}
     injection_indices = {"ccsne_validation": None, "blip_validation": None}
     if "noise" in classes:
         bundles["noise"] = {
             detector: str(path.resolve()) for detector, path in noise_b.items()
         }
         snr["noise"] = 0.0
+        snr_by_detector["noise"] = {detector: 0.0 for detector in detectors}
 
     if "inj_ccsn" in classes:
         ccsn_pool = np.asarray(TrainValData.load(source="ccsne", seed=0).val)
@@ -262,6 +273,7 @@ def prep_index(
             fmax,
             ccsn_pool[ccsn_index],
             sky=sky,
+            snr_reference_det=snr_reference_det,
         )
         ccsn_b = {
             detector: inject_into_bundle(
@@ -275,6 +287,9 @@ def prep_index(
             detector: str(path.resolve()) for detector, path in ccsn_b.items()
         }
         snr["inj_ccsn"] = float(net_snr)
+        snr_by_detector["inj_ccsn"] = per_detector_snr(
+            prepared, injected, n_seg, dt, flow, fmax
+        )
 
     if "inj_glitch" in classes:
         blip_pool = np.asarray(TrainValData.load(source="blip", seed=0).val)
@@ -304,7 +319,15 @@ def prep_index(
             for detector, path in glitch_b.items()
         }
         snr["inj_glitch"] = float(glitch_snr)
+        # Incoherent by construction: all the power is in the host detector.
+        snr_by_detector["inj_glitch"] = {
+            detector: (float(glitch_snr) if detector == gdet else 0.0)
+            for detector in detectors
+        }
 
+    # real_glitch deliberately has no snr_by_detector entry: the catalogue SNR is
+    # a host-detector trigger value, and the non-host detectors hold whatever the
+    # real strain happens to contain. Fabricating a split would be a lie.
     if "real_glitch" in classes:
         bundles["real_glitch"] = {
             detector: str(path.resolve()) for detector, path in real_g.items()
@@ -323,8 +346,13 @@ def prep_index(
         "gps": {"blip": blip_gps, "noise": noise_gps},
         "sky": sky,
         "snr": snr,
+        "snr_by_detector": snr_by_detector,
         "injection": {
             "target_snr": target,
+            # "network": target_snr IS the network SNR (fixed-budget comparison).
+            # A detector name: that detector reaches target_snr and the network
+            # SNR is whatever the added detectors give (fixed-source comparison).
+            "snr_normalisation": snr_reference_det or "network",
             "training_data_seed": 0,
             "validation_indices": injection_indices,
         },
@@ -357,8 +385,10 @@ def _write_json_atomic(path: Path, payload: object) -> None:
 def _validated_manifest_fingerprint(manifest: dict) -> str:
     if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
         raise RuntimeError(
-            "This campaign requires a schema-v2 manifest prepared with the "
-            "current runner. Use a fresh campaign output directory."
+            f"This campaign requires a schema-v{MANIFEST_SCHEMA_VERSION} manifest "
+            f"prepared with the current runner (found "
+            f"v{manifest.get('schema_version')}). Use a fresh campaign output "
+            "directory."
         )
     claimed = manifest.get("manifest_fingerprint")
     unsigned = dict(manifest)
@@ -619,6 +649,17 @@ def main() -> None:
         "--campaign-id",
         help="Immutable campaign identifier stored in manifests and results.",
     )
+    p.add_argument(
+        "--snr-reference-det",
+        help=(
+            "Normalise the injected amplitude so THIS detector reaches the "
+            "target SNR, letting the network SNR be whatever the added "
+            "detectors give (fixed-source comparison: identical strain in the "
+            "reference detector, plus a detector). Set it to the detector the "
+            "one-detector campaign used. Omit to normalise on the network SNR, "
+            "which instead redistributes a fixed budget."
+        ),
+    )
     p.add_argument("--no-marginal", action="store_true")
     p.add_argument(
         "--keep-bundles",
@@ -650,6 +691,14 @@ def main() -> None:
     if glitch_det not in detectors:
         p.error(
             f"--glitch-det {glitch_det} is absent from --detectors {detectors}"
+        )
+    snr_reference_det = (
+        args.snr_reference_det.upper() if args.snr_reference_det else None
+    )
+    if snr_reference_det is not None and snr_reference_det not in detectors:
+        p.error(
+            f"--snr-reference-det {snr_reference_det} is absent from "
+            f"--detectors {detectors}"
         )
     if args.flow >= args.fmax:
         p.error("--flow must be lower than --fmax")
@@ -705,6 +754,17 @@ def main() -> None:
                 for key, value in expected.items()
                 if existing_manifest.get(key) != value
             }
+            # Normalisation decides what target_snr MEANS, so a manifest prepared
+            # under the other convention is not interchangeable with this one.
+            expected_normalisation = snr_reference_det or "network"
+            existing_normalisation = (
+                existing_manifest.get("injection") or {}
+            ).get("snr_normalisation")
+            if existing_normalisation != expected_normalisation:
+                mismatched["injection.snr_normalisation"] = (
+                    existing_normalisation,
+                    expected_normalisation,
+                )
             missing_classes = sorted(
                 set(prep_classes)
                 - set(existing_manifest.get("prepared_classes", []))
@@ -739,6 +799,7 @@ def main() -> None:
                 blip_ifo=args.blip_ifo,
                 classes=prep_classes,
                 campaign_id=campaign_id,
+                snr_reference_det=snr_reference_det,
             )
             _log(args.index, f"prep done -> {manifest_path}")
     if args.stage in ("analysis", "both"):

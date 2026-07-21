@@ -107,6 +107,42 @@ def test_commands_match_manifest_and_fixed_sky(tmp_path):
     assert "--0noise" in post
 
 
+def test_free_sky_omits_fixed_sky_arguments(tmp_path):
+    manifest_path = _write_manifest(tmp_path)
+    manifest = load_event_manifest(manifest_path)
+    output = tmp_path / "out"
+    inputs = detector_inputs(manifest, manifest_path, "inj_ccsn", output)
+    settings = RunSettings(
+        iterations=1000, burnin=100, chains=4, threads=2, fix_sky=False
+    )
+
+    command = bayeswave_command(
+        "BayesWave", inputs, output, 300.0, 800.0, manifest["sky"], settings
+    )
+    assert "--fixSky" not in command
+    assert "--fixRA" not in command
+    assert "--fixDEC" not in command
+
+
+def test_fixed_sky_rejects_degrees(tmp_path):
+    manifest_path = _write_manifest(tmp_path)
+    manifest = load_event_manifest(manifest_path)
+    output = tmp_path / "out"
+    inputs = detector_inputs(manifest, manifest_path, "inj_ccsn", output)
+    settings = RunSettings(iterations=1000, burnin=100, chains=4, threads=2)
+
+    with pytest.raises(ValueError, match="radians"):
+        bayeswave_command(
+            "BayesWave",
+            inputs,
+            output,
+            300.0,
+            800.0,
+            {"ra": 68.8, "dec": -17.2},  # the same direction, in degrees
+            settings,
+        )
+
+
 def test_detector_inputs_reject_mismatched_grids(tmp_path):
     manifest_path = _write_manifest(tmp_path)
     manifest = json.loads(manifest_path.read_text())
@@ -153,6 +189,18 @@ def test_parse_and_collect_result(tmp_path):
 
     parsed = parse_evidence(evidence_path)
     assert parsed["signal"] == (12.5, 0.3)
+
+    # Placeholder rows BayesWave writes for models it never sampled must not be
+    # reported as a real (huge) Bayes factor -- both seen in the H1-L1 pilot.
+    for label, text in (
+        ("sentinel", "signal 0 0\nglitch 10000 1\nnoise 0 0\n"),
+        ("negative uncertainty",
+         "signal 604415.0 4.38\nglitch 604465.0 -6.03e-05\nnoise 604513.7 3.3e-05\n"),
+    ):
+        bad = evidence_path.parent / f"evidence_{label.split()[0]}.dat"
+        bad.write_text(text)
+        with pytest.raises(ValueError, match="placeholder/unsampled"):
+            parse_evidence(bad)
     result = collect_result(
         manifest,
         manifest_path,

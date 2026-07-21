@@ -66,6 +66,13 @@ class RunSettings:
     seed: int = 1234
     checkpoint_interval_hours: float = 1.0
     sample_rate: float = 2048.0
+    # Fixing the sky matches the targeted known-direction starccato analysis, but
+    # it is only correct if the manifest direction is right: a fixed WRONG sky
+    # pins the coherent model to the wrong inter-detector delay and hands the
+    # comparison to the glitch model. Run with fix_sky=False to let BayesWave
+    # sample the sky -- that is the diagnostic that separates a sky-handoff error
+    # from a genuine lack of coherent evidence.
+    fix_sky: bool = True
 
     def validate(self) -> None:
         if self.iterations <= 0:
@@ -331,15 +338,26 @@ def bayeswave_command(
             str(settings.checkpoint_interval_hours),
         ]
     )
-    if sky is not None and "ra" in sky and "dec" in sky:
+    if settings.fix_sky and sky is not None and "ra" in sky and "dec" in sky:
+        ra = float(sky["ra"])
+        dec = float(sky["dec"])
+        # BayesWave documents --fixRA/--fixDEC as RADIANS (BayesWave.c usage text)
+        # and stores them as extParams[0]=RA, extParams[1]=sin(DEC). Degrees here
+        # would silently point the coherent model at the wrong sky, so reject any
+        # value outside the radian domain.
+        if not 0.0 <= ra <= 2.0 * math.pi:
+            raise ValueError(
+                f"sky ra={ra} is outside [0, 2pi]; --fixRA expects radians"
+            )
+        if not -math.pi / 2.0 <= dec <= math.pi / 2.0:
+            raise ValueError(
+                f"sky dec={dec} is outside [-pi/2, pi/2]; --fixDEC expects radians"
+            )
+        # --fixSky pins ONLY RA and sin(DEC). Polarization angle (extParams[2])
+        # and ellipticity (extParams[3]) stay free, so a linearly polarized
+        # injection is recovered without penalty regardless of its psi.
         command.extend(
-            [
-                "--fixSky",
-                "--fixRA",
-                str(float(sky["ra"])),
-                "--fixDEC",
-                str(float(sky["dec"])),
-            ]
+            ["--fixSky", "--fixRA", str(ra), "--fixDEC", str(dec)]
         )
     return command
 
@@ -411,6 +429,20 @@ def parse_evidence(path: Path) -> dict[str, tuple[float, float]]:
     missing = required.difference(evidence)
     if missing:
         raise ValueError(f"evidence file is missing models: {sorted(missing)}")
+    # BayesWave writes placeholder rows for models it never actually sampled
+    # (observed: "signal 0 0 / glitch 10000 1 / noise 0 0", and a negative
+    # uncertainty on an unsampled glitch model). Those parse as valid floats and
+    # would otherwise be reported as a real -10000 Bayes factor, so reject them
+    # here -- this is also what stops _evidence_complete() from calling a dead
+    # run finished. A genuine evidence always has a positive, finite uncertainty.
+    for model in sorted(required):
+        logz, unc = evidence[model]
+        if not math.isfinite(logz) or not math.isfinite(unc) or unc <= 0.0:
+            raise ValueError(
+                f"evidence file has a placeholder/unsampled {model} model "
+                f"(logZ={logz}, uncertainty={unc}); the run did not produce a "
+                f"usable evidence for every model: {path}"
+            )
     return evidence
 
 
@@ -570,6 +602,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--checkpoint-interval-hours", type=float, default=1.0)
     parser.add_argument(
+        "--free-sky",
+        action="store_true",
+        help="Let BayesWave sample the sky instead of fixing it to the manifest "
+             "direction. Use this to test whether a poor signal-vs-glitch Bayes "
+             "factor comes from a mis-specified fixed sky or from a genuine lack "
+             "of coherent evidence.",
+    )
+    parser.add_argument(
         "--prepare-only",
         action="store_true",
         help="write frame/cache inputs but do not run BayesWave",
@@ -605,6 +645,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         seed=args.seed,
         checkpoint_interval_hours=args.checkpoint_interval_hours,
         sample_rate=args.sample_rate,
+        fix_sky=not args.free_sky,
     )
     settings.validate()
     manifest_path = args.manifest.resolve()
@@ -682,6 +723,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     metadata_path = output_dir / "run_metadata.json"
     if metadata_path.is_file():
         previous = json.loads(metadata_path.read_text())
+        # A completed evidence.dat is reused as-is, so a settings change here
+        # would silently return the PREVIOUS run's Bayes factor under the new
+        # settings -- e.g. a --free-sky rerun reporting the fixed-sky result.
+        previous_settings = dict(previous.get("settings") or {})
+        if previous_settings:
+            previous_settings.setdefault("fix_sky", True)  # pre-dates the flag
+            if previous_settings != asdict(settings):
+                differing = sorted(
+                    key
+                    for key in set(previous_settings) | set(asdict(settings))
+                    if previous_settings.get(key) != asdict(settings).get(key)
+                )
+                raise RuntimeError(
+                    f"{output_dir} holds a run with different settings "
+                    f"({', '.join(differing)}). Use a fresh output directory."
+                )
         for key in (
             "sampling_elapsed_seconds",
             "post_elapsed_seconds",

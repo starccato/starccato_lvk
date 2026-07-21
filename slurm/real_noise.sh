@@ -8,7 +8,7 @@
 #   DETECTORS     "H1", "L1", or "H1 L1"
 #
 # Common optional variables:
-#   STAGE, CLASS, BLIP_IFO, GLITCH_DET, RESULTS_ROOT, VENV
+#   STAGE, CLASS, BLIP_IFO, GLITCH_DET, SNR_REFERENCE_DET, RESULTS_ROOT, VENV
 #   FLOW, FMAX, NUM_WARMUP, NUM_SAMPLES, NUM_CHAINS
 #   TARGET_ACCEPT_PROB, MAX_TREE_DEPTH, MAP_NUM_STARTS, MAP_MAXITER
 #
@@ -24,8 +24,15 @@
 #SBATCH --account=oz303
 #SBATCH --array=0-9%10
 #SBATCH --cpus-per-task=1
-#SBATCH --mem=10G
-#SBATCH --time=12:00:00
+# Measured actual (job 14474010, 1-detector L1, single class 'noise', analysis
+# stage): 1.7 GB peak / 4m25s, against a 10G/12h request -- ~6x and ~160x
+# headroom. These values are conservative for the untested 2-detector case
+# (H1+L1 analysis runs one coherent signal model + a glitch model PER
+# detector, so cost is somewhat but not double the 1-detector run) rather than
+# tight to that single 1-detector data point. Re-check with seff/job-report
+# after the first H1+L1 pilot batch and tighten further before the full array.
+#SBATCH --mem=4G
+#SBATCH --time=00:30:00
 #SBATCH --output=slurm/logs/nml_%A_%a.out
 #SBATCH --error=slurm/logs/nml_%A_%a.err
 
@@ -42,6 +49,11 @@ STAGE=${STAGE:-analysis}
 CLASS=${CLASS:-}
 BLIP_IFO=${BLIP_IFO:-L1}
 GLITCH_DET=${GLITCH_DET:-${BLIP_IFO}}
+# Normalise the injected amplitude on ONE detector so the network SNR is an
+# output, not an input (fixed-source comparison against the one-detector
+# campaign). Set it to the detector that campaign analysed. Empty = normalise on
+# the network SNR, which redistributes a fixed budget instead of adding signal.
+SNR_REFERENCE_DET=${SNR_REFERENCE_DET:-}
 PREP_CLASSES=${PREP_CLASSES:-"noise inj_ccsn real_glitch"}
 FLOW=${FLOW:-300}
 FMAX=${FMAX:-800}
@@ -121,6 +133,9 @@ if [[ "${STAGE}" == "prep" || "${STAGE}" == "both" ]]; then
 fi
 if [[ -n "${CLASS}" ]]; then
   RUNNER_ARGS+=(--class "${CLASS}")
+fi
+if [[ -n "${SNR_REFERENCE_DET}" ]]; then
+  RUNNER_ARGS+=(--snr-reference-det "${SNR_REFERENCE_DET}")
 fi
 
 srun "${VENV}/bin/python" studies/real_noise_event.py "${RUNNER_ARGS[@]}"
