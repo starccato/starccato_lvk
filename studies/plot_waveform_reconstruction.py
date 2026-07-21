@@ -1,21 +1,23 @@
 """Time-domain waveform posterior: our VAE odds analysis vs BayesWave.
 
 Overlays, for a single event, the reconstructed signal waveform from
-  - our method: posterior latent draws (signal samples.npz, written when
-    run_bcr_posteriors is called with save_artifacts=True) decoded through the
-    Starccato VAE, and
+  - our method: posterior latent draws (signal samples.npz, written under
+    <outdir>/e<N>/<class>/analysis/signal/ when real_noise_event.py is run with
+    --save-artifacts) decoded through the Starccato VAE, and
   - BayesWave: the signal-model waveform draws from BayesWavePost's post/signal/.
 
 Both are standardized to peak-normalized amplitude so the comparison is of
 morphology, which is what the odds ratio discriminates on.
 
-    # 1. re-run ONE event with artifacts (see module docstring in real_noise_event):
-    #    run_bcr_posteriors(..., save_artifacts=True) -> <edir>/signal/samples.npz
+    # 1. re-run ONE event with artifacts (--save-artifacts also suppresses the
+    #    prune that would otherwise delete analysis/ straight afterwards):
+    python studies/real_noise_event.py --index 3 --detectors H1 L1 \
+        --class inj_ccsn --save-artifacts --outdir <OUTDIR>
     # 2. plot:
     uv run python studies/plot_waveform_reconstruction.py \
-        --our-samples slurm/out/rn_H1_L1/e0/signal/samples.npz \
-        --bayeswave-post /fred/oz980/.../bayeswave_H1_L1/e0/inj_ccsn/post/signal \
-        --out fig_waveform_reco.pdf
+        --our-samples <OUTDIR>/e3/inj_ccsn/analysis/signal/samples.npz \
+        --bayeswave-post /fred/oz980/.../bayeswave_H1_L1/e3/inj_ccsn/post/signal \
+        --ifo H1 --out fig_waveform_reco.pdf
     # our-posterior-only (no BayesWave) works too -- omit --bayeswave-post.
 
     # self-check (no data needed):
