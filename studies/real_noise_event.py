@@ -785,7 +785,10 @@ def main() -> None:
         # prepared class (skips existing rows), so the last class task to
         # finish completes the set and prunes the event's heavy files.
         run_baseline_index(manifest["index"], args.outdir, 128, 8)
-        if not args.keep_bundles:
+        # --save-artifacts writes samples.npz under <edir>/<cls>/analysis/, which
+        # is exactly what prune_completed_index deletes; asking for artifacts
+        # must not silently destroy them.
+        if not args.keep_bundles and not args.save_artifacts:
             prune_completed_index(manifest, args.outdir)
     _log(args.index, "all stages complete")
 
