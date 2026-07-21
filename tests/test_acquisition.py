@@ -2,7 +2,9 @@ from starccato_lvk.acquisition.io.strain_loader import (
     ANALYSIS_DURATION,
     strain_loader,
     load_analysis_bundle,
+    load_analysis_chunk_and_psd,
 )
+from starccato_lvk.acquisition.io import plotting
 from starccato_lvk.acquisition.io.utils import _get_fnames_for_range
 from starccato_lvk.acquisition.io.glitch_catalog import get_blip_trigger_time
 from starccato_lvk.acquisition.io.determine_valid_segments import (
@@ -12,6 +14,8 @@ from starccato_lvk.acquisition.io.determine_valid_segments import (
 )
 import os
 import pytest
+import numpy as np
+from gwpy.timeseries import TimeSeries
 
 OUT = "data_acquition"
 
@@ -83,3 +87,58 @@ def test_utils(mock_get_data_files_and_gps_times):
 def test_load_blips():
     blips_times = [get_blip_trigger_time(i) for i in range(10)]
     assert len(blips_times) == 10
+
+
+def test_qtransform_nan_in_diagnostic_window_is_skipped(monkeypatch):
+    data = TimeSeries(np.ones(4096))
+    data.value[0] = np.nan
+
+    class Axis:
+        def __init__(self):
+            self.title = None
+
+        def axis(self, *_args):
+            pass
+
+        def set_title(self, title):
+            self.title = title
+
+    axes = [Axis() for _ in range(4)]
+
+    def fail_q_transform(**_kwargs):
+        raise AssertionError("q-transform should not run for non-finite data")
+
+    monkeypatch.setattr(data, "q_transform", fail_q_transform)
+    plotting.plot_qtransform(data, event_time=0.0, axes=axes)
+
+    assert axes[0].title == "Q-transform unavailable (non-finite samples in full window)"
+
+
+def test_plot_proceeds_when_qtransform_raises(monkeypatch, tmp_path):
+    data = TimeSeries(np.ones(4096))
+
+    def fail_q_transform(**_kwargs):
+        raise ValueError("GWpy diagnostic failure")
+
+    monkeypatch.setattr(data, "q_transform", fail_q_transform)
+    plotting.plot(data, data.psd(), event_time=0.0, fname=tmp_path / "diagnostic.png")
+
+    assert (tmp_path / "diagnostic.png").exists()
+
+
+@pytest.mark.parametrize("bad_region", ["analysis", "PSD"])
+def test_nonfinite_inference_strain_is_rejected(bad_region):
+    trigger = 1_000.0
+    sample_rate = 128.0
+
+    def fetch(start, end):
+        times = np.arange(start, end, 1 / sample_rate)
+        values = np.ones(times.size)
+        if bad_region == "analysis":
+            values[np.argmin(np.abs(times - trigger))] = np.nan
+        else:
+            values[np.argmin(np.abs(times - (trigger - 3.0)))] = np.nan
+        return TimeSeries(values, times=times)
+
+    with pytest.raises(ValueError, match=rf"{bad_region} strain contains 1 non-finite"):
+        load_analysis_chunk_and_psd(trigger, data_fetcher=fetch)

@@ -14,7 +14,13 @@ def plot(data: TimeSeries, psd: FrequencySeries, event_time: float, fname: str):
     ax3 = [fig.add_subplot(gs[2, i]) for i in range(4)]
     plot_psd_and_analysis_data(psd, data, ax1)
     plot_analysis_timeseries(data, event_time, ax2)
-    plot_qtransform(data, event_time, ax3)
+    # This is a diagnostic only.  A GWpy q-transform can fail for reasons
+    # unrelated to the analysis/PSD windows, so it must not abort bundle
+    # creation.  The loader separately validates those inference inputs.
+    try:
+        plot_qtransform(data, event_time, ax3)
+    except Exception as exc:
+        _mark_qtransform_unavailable(ax3, f"{type(exc).__name__}: {exc}")
     plt.suptitle(f"Event Time: {event_time:.3f} GPS", fontsize=16)
     plt.tight_layout()
     fig.savefig(fname, bbox_inches='tight')
@@ -25,9 +31,15 @@ def plot_qtransform(ts: TimeSeries, event_time: float, axes=None):
     nyquist = ts.sample_rate.value / 2
     f_high = min(1024, 0.63 * nyquist)
     if len(ts.value) < 4096:
-        for ax in axes:
-            ax.axis("off")
-        axes[0].set_title("Q-transform unavailable (segment too short)")
+        _mark_qtransform_unavailable(axes, "segment too short")
+        return
+
+    # The full diagnostic window can include a gap at either edge even when
+    # the separate PSD and analysis windows used for inference are valid.
+    # GWpy's q-transform rejects such a series, so do not let this optional
+    # diagnostic prevent the valid bundle from being written.
+    if not np.isfinite(np.asarray(ts.value)).all():
+        _mark_qtransform_unavailable(axes, "non-finite samples in full window")
         return
 
     q_scan = ts.q_transform(
@@ -51,6 +63,12 @@ def plot_qtransform(ts: TimeSeries, event_time: float, axes=None):
         ax.tick_params(axis='both', which='major', labelsize=14)
         ax.set_title(f't0 ± {offset} s', fontsize=14)
         ax.grid(False)
+
+
+def _mark_qtransform_unavailable(axes, reason: str) -> None:
+    for ax in axes:
+        ax.axis("off")
+    axes[0].set_title(f"Q-transform unavailable ({reason})")
 
 
 def plot_psd_and_analysis_data(psd: FrequencySeries, analysis_data: TimeSeries, ax):
