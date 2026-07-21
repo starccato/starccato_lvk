@@ -71,26 +71,24 @@ def our_waveform_draws(samples_npz: Path, model: str = "ccsne",
 
 
 # ---------------------------------------------------------------------------
-# BayesWave reconstruction  -- FINALIZE loader once the file format is known.
+# BayesWave reconstruction
 # ---------------------------------------------------------------------------
 
-def bayeswave_waveform_draws(post_signal_dir: Path) -> np.ndarray:
+def bayeswave_waveform_draws(post_signal_dir: Path, ifo: str = "H1") -> np.ndarray:
     """Load BayesWave signal-model waveform draws as (n_draws, n_time).
 
-    TODO(format): BayesWavePost writes the reconstructed signal waveform under
-    post/signal/. Confirm the exact file (candidates: signal_waveform.dat.*,
-    signal_recovered_whitened.dat, or the median+CI file) and its columns
-    (time vs strain) before trusting this. Paste `ls` + `head` of that dir.
+    BayesWavePost writes signal_recovered_whitened_waveform_<IFO>.dat with one
+    row per posterior draw and one column per time sample (50 x 8192 for the
+    4 s / 2048 Hz segment), i.e. already the (n_draws, n_time) matrix we want.
+    Whitened is the right choice here: it is what the sampler actually
+    constrains, and we peak-normalize for a morphology comparison anyway.
     """
-    d = Path(post_signal_dir)
-    # Best-guess: per-sample waveform files, one column of strain each.
-    files = sorted(d.glob("signal_waveform.dat.*")) or sorted(d.glob("*waveform*.dat*"))
-    if not files:
+    f = Path(post_signal_dir) / f"signal_recovered_whitened_waveform_{ifo}.dat"
+    if not f.is_file():
         raise FileNotFoundError(
-            f"no waveform files under {d}; run with --our-samples only, or paste "
-            "`ls`/`head` of this dir so the loader can be matched to the format.")
-    draws = [np.loadtxt(f) for f in files]
-    arr = np.stack([w[:, -1] if w.ndim == 2 else w for w in draws])
+            f"{f} not found. Expected BayesWavePost output under post/signal/; "
+            f"available: {sorted(p.name for p in Path(post_signal_dir).glob('*waveform*'))}")
+    arr = np.atleast_2d(np.loadtxt(f))
     return arr / np.max(np.abs(arr), axis=1, keepdims=True)
 
 
@@ -104,20 +102,30 @@ def _band(ax, wf: np.ndarray, t: np.ndarray, color: str, label: str) -> None:
     ax.plot(t, med, color=color, lw=1.6, label=label)
 
 
+def _time_axis(wf: np.ndarray, fs: float) -> np.ndarray:
+    """Millisecond axis with t=0 at the peak of the median waveform.
+
+    The two methods are on different grids (our VAE 512 @ 4096 Hz, BayesWave
+    8192 @ 2048 Hz over a 4 s segment), so a shared array-centre origin does
+    not line the signals up. Anchoring each on its own median peak does.
+    """
+    med = np.median(wf, axis=0)
+    return (np.arange(wf.shape[1]) - int(np.argmax(np.abs(med)))) / fs * 1e3
+
+
 def make_plot(our: np.ndarray, bw: np.ndarray | None, truth: np.ndarray | None,
-              out: Path, fs: float = 4096.0) -> None:
+              out: Path, fs: float = 4096.0, bw_fs: float = 2048.0) -> None:
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    n = our.shape[1]
-    t = (np.arange(n) - n // 2) / fs * 1e3  # ms, peak-centered
+    t = _time_axis(our, fs)
     fig, ax = plt.subplots(figsize=(5.2, 3.0))
     _band(ax, our, t, "#0072B2", r"our posterior ($\ln\mathcal{O}$)")
     if bw is not None:
-        # BayesWave may use a different length; interpolate onto our grid.
-        tb = (np.arange(bw.shape[1]) - bw.shape[1] // 2) / fs * 1e3
-        bw_i = np.stack([np.interp(t, tb, w) for w in bw])
+        # BayesWave runs at its own rate over a much longer segment; put it on
+        # our grid, peak-aligned, and crop to our window.
+        bw_i = np.stack([np.interp(t, _time_axis(bw, bw_fs), w) for w in bw])
         _band(ax, bw_i, t, "#D55E00", "BayesWave")
     if truth is not None:
         tr = truth / np.max(np.abs(truth))
@@ -152,6 +160,7 @@ def main() -> None:
     ap.add_argument("--bayeswave-post", type=Path, default=None)
     ap.add_argument("--truth", type=Path, default=None, help=".npy injected waveform (512,)")
     ap.add_argument("--model", default="ccsne")
+    ap.add_argument("--ifo", default="H1", help="which detector's BayesWave reconstruction")
     ap.add_argument("--out", type=Path, default=Path("fig_waveform_reco.pdf"))
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
@@ -162,7 +171,8 @@ def main() -> None:
     if args.our_samples is None:
         ap.error("--our-samples required (or --self-test)")
     our = our_waveform_draws(args.our_samples, model=args.model)
-    bw = bayeswave_waveform_draws(args.bayeswave_post) if args.bayeswave_post else None
+    bw = (bayeswave_waveform_draws(args.bayeswave_post, ifo=args.ifo)
+          if args.bayeswave_post else None)
     truth = np.load(args.truth) if args.truth else None
     make_plot(our, bw, truth, args.out)
 
