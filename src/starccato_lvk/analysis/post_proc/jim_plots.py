@@ -11,6 +11,21 @@ from ..multidet_data_prep import MultiDetPreparedData
 from ..jim_waveform import StarccatoJimWaveform
 import jax.numpy as jnp
 
+# Half-width of the time-domain zoom window, seconds.
+ZOOM_S = 0.06
+
+
+def _whiten(x: np.ndarray, psd: np.ndarray, dt: float) -> np.ndarray:
+    """Whitened time series (dimensionless); infinite out-of-band PSD bandpasses.
+
+    Same convention as studies/pp_predictive_fig.py, so the per-run artifact and
+    the manuscript figure mean the same thing by "whitened".
+    """
+    n = np.asarray(x).size
+    df = 1.0 / (n * dt)
+    w = np.where(np.isfinite(psd) & (psd > 0), psd, np.inf)
+    return np.fft.irfft(np.fft.rfft(np.asarray(x)) * dt / np.sqrt(w / (4.0 * df)), n=n)
+
 
 def plot_data_overview(prepared: MultiDetPreparedData, outpath: Path) -> None:
     """Plot time- and frequency-domain views of the prepared data."""
@@ -150,18 +165,35 @@ def plot_posterior_predictive_from_samples(
         sample_td = np.asarray(sample_td)
         sample_psd = np.asarray(sample_psd)
 
-        lower = np.percentile(sample_td, ci[0], axis=0)
-        upper = np.percentile(sample_td, ci[1], axis=0)
-        median = np.percentile(sample_td, 50, axis=0)
+        # Whiten in-band before plotting. In raw strain over a 4 s segment a
+        # ~30 ms burst is invisible -- the posterior median draws as a flat line
+        # on top of noise 3 orders of magnitude larger. Whitening (out-of-band
+        # PSD -> inf, so it also bandpasses) puts data and model in noise-sigma
+        # units, where the burst is visible. Percentiles are taken AFTER
+        # whitening, since whitening a percentile is not the percentile of the
+        # whitened draws.
+        psd_band = np.where(mask, np.asarray(data_info.psd.values), np.inf)
+        sigma = float(np.std(_whiten(np.asarray(data_td), psd_band, dt))) or 1.0
+        _wh = lambda x: _whiten(np.asarray(x), psd_band, dt) / sigma
+        sample_td_w = np.asarray([_wh(td) for td in sample_td])
+        data_td_w = _wh(data_td)
+
+        lower = np.percentile(sample_td_w, ci[0], axis=0)
+        upper = np.percentile(sample_td_w, ci[1], axis=0)
+        median = np.percentile(sample_td_w, 50, axis=0)
 
         ax_time = axes[row, 0]
-        ax_time.plot(time_array, data_td, color="tab:gray", lw=0.8, label=f"{det.name} data")
+        ax_time.plot(time_array, data_td_w, color="tab:gray", lw=0.8, label=f"{det.name} data")
         ax_time.plot(time_array, median, color="tab:orange", lw=1.2, label="Posterior median")
         ax_time.fill_between(time_array, lower, upper, color="tab:orange", alpha=0.3,
                              label=f"{ci[0]}–{ci[1]}% CI")
+        # Zoom to the burst: centre on the reconstructed signal power.
+        centre = float(time_array[int(np.argmax(np.abs(median)))])
+        ax_time.set_xlim(max(centre - ZOOM_S, float(np.min(time_array))),
+                         min(centre + ZOOM_S, float(np.max(time_array))))
         ax_time.set_title(f"{title_prefix} {det.name} time domain")
         ax_time.set_xlabel("Time [s]")
-        ax_time.set_ylabel("Strain")
+        ax_time.set_ylabel(r"Whitened strain [$\sigma$]")
         ax_time.grid(True, alpha=0.3)
         ax_time.legend(frameon=False)
 

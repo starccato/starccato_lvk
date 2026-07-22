@@ -10,6 +10,20 @@ from bilby.gw import utils as gwutils
 # Constants
 FMAX = 1024.0
 FLOW = 100.0
+# Whitening/zoom band for the time-domain panel. Raw strain over the full 4 s
+# segment hides a ~30 ms burst entirely, so the panel is whitened in-band and
+# zoomed to the burst. Matches the manuscript figure (studies/pp_predictive_fig.py).
+FLOW_WHITEN = 300.0
+FMAX_WHITEN = 800.0
+ZOOM_MS = 60.0
+
+
+def _whiten(x, psd, dt):
+    """Whitened time series (dimensionless); infinite out-of-band PSD bandpasses."""
+    n = np.asarray(x).size
+    df = 1.0 / (n * dt)
+    w = np.where(np.isfinite(psd) & (psd > 0), psd, np.inf)
+    return np.fft.irfft(np.fft.rfft(np.asarray(x)) * dt / np.sqrt(w / (4.0 * df)), n=n)
 
 # Plot styling
 DATA_COL = "tab:gray"
@@ -86,6 +100,28 @@ def _plot_time_domain_posterior(ax, data, color:str, label_prefix="", alpha=0.3,
     strain = data.get('strain')
     strain_ts = data.get('strain_series')
 
+    # Whiten in-band: a ~30 ms burst is invisible in raw strain over a 4 s
+    # segment (the posterior median plots as a flat line at zero). Whitening
+    # band-limits and puts everything in noise-sigma units, where the burst
+    # actually stands out against the data.
+    asd = data.get('asd')
+    freqs = data.get('freqs')
+    whitened = False
+    if asd is not None and freqs is not None and strain is not None:
+        dt = 1.0 / float(data['sampling_frequency'])
+        # frequency_array is the band-limited analysis grid, not the full rfft
+        # grid of the strain, so interpolate the ASD onto the latter.
+        rfft_f = np.fft.rfftfreq(np.size(strain), d=dt)
+        if np.size(freqs) > 1:
+            asd_i = np.interp(rfft_f, np.asarray(freqs).ravel(), np.asarray(asd).ravel())
+            band = (rfft_f >= FLOW_WHITEN) & (rfft_f <= FMAX_WHITEN)
+            psd_band = np.where(band, asd_i ** 2, np.inf)
+            sigma = np.std(_whiten(strain, psd_band, dt)) or 1.0
+            _wh = lambda x: _whiten(x, psd_band, dt) / sigma
+            strain = _wh(strain)
+            pp_quantiles = np.stack([_wh(q) for q in np.asarray(pp_quantiles)])
+            whitened = True
+
     # Plot observed strain if requested
     if plot_data and strain is not None:
         ifo_label = data.get('ifo_name', 'Data')
@@ -103,13 +139,22 @@ def _plot_time_domain_posterior(ax, data, color:str, label_prefix="", alpha=0.3,
     # Plot injection signal if available and requested
     if plot_injection and 'injection_signal' in data:
         inj = np.asarray(data['injection_signal']).ravel()
+        if whitened:
+            inj = _wh(inj)
         ax.plot(t, inj, color=SIGNAL_COL, label='Injected Signal', linewidth=2, alpha=0.9, zorder=-10)
 
-    # Use the full available time span
-    ax.set_xlim(float(np.min(t)), float(np.max(t)))
+    if whitened:
+        # Zoom to the burst: centre on the posterior median's peak, which is
+        # where the reconstructed signal power is.
+        centre = float(t[int(np.argmax(np.abs(pp_quantiles[1])))])
+        half = ZOOM_MS * 1e-3
+        ax.set_xlim(max(centre - half, float(np.min(t))),
+                    min(centre + half, float(np.max(t))))
+    else:
+        ax.set_xlim(float(np.min(t)), float(np.max(t)))
 
     ax.set_xlabel('Time [s] relative to trigger')
-    ax.set_ylabel("Strain")
+    ax.set_ylabel(r"Whitened strain [$\sigma$]" if whitened else "Strain")
     ax.grid(False)
 
 

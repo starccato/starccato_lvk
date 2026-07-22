@@ -32,6 +32,10 @@ from pathlib import Path
 
 import numpy as np
 
+# Reuse the whitener behind the manuscript's posterior-predictive figure so both
+# figures define "whitened" identically (studies/ cross-imports are the repo norm).
+from pp_predictive_fig import _whiten
+
 
 # ---------------------------------------------------------------------------
 # Our posterior: latent samples.npz -> decoded time-domain waveform draws
@@ -61,8 +65,13 @@ def _latent_matrix(npz: dict, latent_dim: int = 5) -> np.ndarray:
 
 
 def our_waveform_draws(samples_npz: Path, model: str = "ccsne",
-                       n_draws: int = 300, seed: int = 0) -> np.ndarray:
-    """Decode posterior latent draws to peak-normalized time-domain waveforms."""
+                       n_draws: int = 300, seed: int = 0,
+                       normalize: bool = True) -> np.ndarray:
+    """Decode posterior latent draws to time-domain waveforms.
+
+    ``normalize=False`` returns raw strain, which is what whitening needs;
+    peak-normalisation is then applied after whitening, not before.
+    """
     from starccato_jax.waveforms import get_model
 
     with np.load(samples_npz) as d:
@@ -70,6 +79,8 @@ def our_waveform_draws(samples_npz: Path, model: str = "ccsne",
     if z.shape[0] > n_draws:
         z = z[np.random.default_rng(seed).choice(z.shape[0], n_draws, replace=False)]
     wf = np.asarray(get_model(model).generate(z=z))  # (n, 512), standardized
+    if not normalize:
+        return wf
     return wf / np.max(np.abs(wf), axis=1, keepdims=True)
 
 
@@ -77,7 +88,47 @@ def our_waveform_draws(samples_npz: Path, model: str = "ccsne",
 # BayesWave reconstruction
 # ---------------------------------------------------------------------------
 
-def bayeswave_waveform_draws(post_signal_dir: Path, ifo: str = "H1") -> np.ndarray:
+def bayeswave_whitened_data(post_signal_dir: Path, ifo: str = "H1") -> np.ndarray | None:
+    """BayesWavePost's whitened strain, on the same grid as its reconstruction."""
+    f = Path(post_signal_dir).resolve().parent / f"whitened_data_{ifo}.dat"
+    return np.loadtxt(f).ravel() if f.is_file() else None
+
+
+def bayeswave_psd(post_signal_dir: Path, ifo: str = "H1") -> np.ndarray | None:
+    """(freq, PSD) from BayesWave's median signal-model PSD, for whitening OUR waveform.
+
+    Out-of-band rows carry a placeholder (~1.14) rather than a real estimate, so
+    the caller must mask to the analysis band before using it.
+    """
+    f = Path(post_signal_dir) / f"signal_median_PSD_{ifo}.dat"
+    if not f.is_file():
+        return None
+    psd = np.loadtxt(f)
+    return np.column_stack([psd[:, 0], psd[:, 1]])
+
+
+def whiten_like_bayeswave(
+    waveform: np.ndarray, fs: float, freq_psd: np.ndarray, flow: float, fmax: float
+) -> np.ndarray:
+    """Whiten OUR time-domain waveform with BayesWave's PSD, band-limited.
+
+    Our decoded waveform is raw strain while BayesWave's reconstruction is
+    whitened, so overlaying them directly compares different quantities. Whiten
+    ours through the same PSD (interpolated onto our own frequency grid) so the
+    morphology comparison is like-for-like. Out-of-band PSD is set to inf, which
+    makes the whitening double as the analysis-band bandpass.
+    """
+    n = waveform.shape[-1]
+    dt = 1.0 / fs
+    freqs = np.fft.rfftfreq(n, d=dt)
+    psd = np.interp(freqs, freq_psd[:, 0], freq_psd[:, 1])
+    psd = np.where((freqs >= flow) & (freqs <= fmax), psd, np.inf)
+    rows = np.atleast_2d(waveform)
+    return np.stack([_whiten(row, psd, dt) for row in rows])
+
+
+def bayeswave_waveform_draws(post_signal_dir: Path, ifo: str = "H1",
+                             normalize: bool = True) -> np.ndarray:
     """Load BayesWave signal-model waveform draws as (n_draws, n_time).
 
     BayesWavePost writes signal_recovered_whitened_waveform_<IFO>.dat with one
@@ -92,6 +143,8 @@ def bayeswave_waveform_draws(post_signal_dir: Path, ifo: str = "H1") -> np.ndarr
             f"{f} not found. Expected BayesWavePost output under post/signal/; "
             f"available: {sorted(p.name for p in Path(post_signal_dir).glob('*waveform*'))}")
     arr = np.atleast_2d(np.loadtxt(f))
+    if not normalize:
+        return arr
     return arr / np.max(np.abs(arr), axis=1, keepdims=True)
 
 
@@ -136,26 +189,54 @@ def bayeswave_evidence_label(post_signal_dir: Path) -> str | None:
             "\n" rf"$\ln Z_{{\rm S}}-\ln Z_{{\rm N}}={sig_noise:+.1f}$")
 
 
+def _peak_norm(wf: np.ndarray) -> np.ndarray:
+    return wf / np.max(np.abs(wf), axis=1, keepdims=True)
+
+
 def make_plot(our: np.ndarray, bw: np.ndarray | None, truth: np.ndarray | None,
               out: Path, fs: float = 4096.0, bw_fs: float = 2048.0,
-              caption: str | None = None) -> None:
+              caption: str | None = None, data: np.ndarray | None = None) -> None:
+    """Whitened reconstruction comparison.
+
+    ``our`` and ``bw`` are RAW (un-normalised) whitened draws; ``data`` is the
+    whitened strain on BayesWave's grid. With data present the figure gets a top
+    panel on an absolute noise-sigma scale (does BayesWave fit the data?) above
+    the peak-normalised morphology panel (do the two methods agree on shape?).
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
     t = _time_axis(our, fs)
-    fig, ax = plt.subplots(figsize=(5.2, 3.0))
-    _band(ax, our, t, "#0072B2", r"our posterior ($\ln\mathcal{O}$)")
+    bw_i = None
     if bw is not None:
         # BayesWave runs at its own rate over a much longer segment; put it on
         # our grid, peak-aligned, and crop to our window.
-        bw_i = np.stack([np.interp(t, _time_axis(bw, bw_fs), w) for w in bw])
-        _band(ax, bw_i, t, "#D55E00", "BayesWave")
+        t_bw = _time_axis(bw, bw_fs)
+        bw_i = np.stack([np.interp(t, t_bw, w) for w in bw])
+
+    if data is not None and bw is not None:
+        # The data shares BayesWave's grid, so it shares that peak-anchored axis.
+        sigma = float(np.std(data))
+        data_i = np.interp(t, t_bw, data) / sigma
+        fig, (ax_d, ax) = plt.subplots(
+            2, 1, figsize=(5.2, 4.6), sharex=True,
+            gridspec_kw={"height_ratios": [1.0, 1.15], "hspace": 0.08})
+        ax_d.plot(t, data_i, color="#9a9a9a", lw=0.8, label="whitened data")
+        _band(ax_d, bw_i / sigma, t, "#D55E00", "BayesWave")
+        ax_d.set_ylabel(r"whitened strain [$\sigma$]")
+        ax_d.legend(frameon=False, fontsize=7, ncol=2, loc="upper left")
+    else:
+        fig, ax = plt.subplots(figsize=(5.2, 3.0))
+
+    _band(ax, _peak_norm(our), t, "#0072B2", r"our posterior ($\ln\mathcal{O}$)")
+    if bw_i is not None:
+        _band(ax, _peak_norm(bw_i), t, "#D55E00", "BayesWave")
     if truth is not None:
         tr = truth / np.max(np.abs(truth))
         ax.plot(t, tr, color="k", ls="--", lw=1.2, label="injected")
     ax.set_xlabel("time relative to peak [ms]")
-    ax.set_ylabel("peak-normalized strain")
+    ax.set_ylabel("peak-norm. whitened strain")
     if caption:
         ax.text(0.02, 0.03, caption, transform=ax.transAxes, fontsize=7,
                 va="bottom", ha="left",
@@ -189,6 +270,9 @@ def main() -> None:
     ap.add_argument("--truth", type=Path, default=None, help=".npy injected waveform (512,)")
     ap.add_argument("--model", default="ccsne")
     ap.add_argument("--ifo", default="H1", help="which detector's BayesWave reconstruction")
+    ap.add_argument("--flow", type=float, default=300.0, help="analysis band low edge (whitening bandpass)")
+    ap.add_argument("--fmax", type=float, default=800.0, help="analysis band high edge")
+    ap.add_argument("--no-data", action="store_true", help="omit the whitened-data panel")
     ap.add_argument("--out", type=Path, default=Path("fig_waveform_reco.pdf"))
     ap.add_argument("--self-test", action="store_true")
     args = ap.parse_args()
@@ -198,13 +282,23 @@ def main() -> None:
         return
     if args.our_samples is None:
         ap.error("--our-samples required (or --self-test)")
-    our = our_waveform_draws(args.our_samples, model=args.model)
-    bw = (bayeswave_waveform_draws(args.bayeswave_post, ifo=args.ifo)
-          if args.bayeswave_post else None)
+    our = our_waveform_draws(args.our_samples, model=args.model, normalize=False)
+    bw = data = caption = None
+    if args.bayeswave_post:
+        bw = bayeswave_waveform_draws(args.bayeswave_post, ifo=args.ifo, normalize=False)
+        caption = bayeswave_evidence_label(args.bayeswave_post)
+        if not args.no_data:
+            data = bayeswave_whitened_data(args.bayeswave_post, ifo=args.ifo)
+        # Whiten OUR waveform through BayesWave's own PSD so both traces are the
+        # same quantity; without a PSD we would be overlaying raw on whitened.
+        psd = bayeswave_psd(args.bayeswave_post, ifo=args.ifo)
+        if psd is not None:
+            our = whiten_like_bayeswave(our, 4096.0, psd, args.flow, args.fmax)
+        else:
+            print("WARNING: no BayesWave PSD found; our trace is NOT whitened and "
+                  "is not directly comparable to BayesWave's whitened reconstruction.")
     truth = np.load(args.truth) if args.truth else None
-    caption = (bayeswave_evidence_label(args.bayeswave_post)
-               if args.bayeswave_post else None)
-    make_plot(our, bw, truth, args.out, caption=caption)
+    make_plot(our, bw, truth, args.out, caption=caption, data=data)
 
 
 if __name__ == "__main__":
