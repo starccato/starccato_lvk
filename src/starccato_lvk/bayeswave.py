@@ -478,6 +478,26 @@ def _stats_row(path: Path) -> dict[str, float] | None:
     return dict(zip(header, values))
 
 
+def _reconstructed_network_snr(
+    output_dir: Path, detectors: Sequence[str]
+) -> tuple[float | None, dict[str, float]]:
+    """Median reconstructed SNR, per detector and combined in quadrature.
+
+    The network file post/signal/signal_stats.dat.geo writes snr=0 (a geocentric
+    placeholder), so the real reconstructed SNRs must be read from the
+    per-detector signal_stats_<IFO>.dat and combined as sqrt(sum snr_i^2).
+    """
+    per_detector: dict[str, float] = {}
+    for ifo in detectors:
+        row = _stats_row(output_dir / "post" / "signal" / f"signal_stats_{ifo}.dat")
+        if row is not None and "snr" in row:
+            per_detector[ifo] = float(row["snr"])
+    if not per_detector:
+        return None, {}
+    network = math.sqrt(sum(snr * snr for snr in per_detector.values()))
+    return network, per_detector
+
+
 def collect_result(
     manifest: Mapping,
     manifest_path: Path,
@@ -493,7 +513,9 @@ def collect_result(
     signal_logz, signal_unc = evidence["signal"]
     glitch_logz, glitch_unc = evidence["glitch"]
     noise_logz, noise_unc = evidence["noise"]
-    signal_stats = _stats_row(output_dir / "post/signal/signal_stats.dat.geo")
+    network_snr, per_detector_snr = _reconstructed_network_snr(
+        output_dir, list(manifest["detectors"])
+    )
     if elapsed_seconds is None:
         metadata_path = output_dir / "run_metadata.json"
         if metadata_path.is_file():
@@ -512,9 +534,8 @@ def collect_result(
         "log_bayeswave_signal_glitch_uncertainty": math.hypot(
             signal_unc, glitch_unc
         ),
-        "signal_reconstructed_snr_median": (
-            signal_stats.get("snr") if signal_stats is not None else None
-        ),
+        "signal_reconstructed_snr_median": network_snr,
+        "signal_reconstructed_snr_per_detector": per_detector_snr,
         "evidence_uncertainty": {
             "signal": signal_unc,
             "glitch": glitch_unc,
