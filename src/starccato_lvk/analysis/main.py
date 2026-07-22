@@ -63,6 +63,108 @@ def _clone_no_response_detector(detector_obj):
     return det_copy
 
 
+def _signal_fit_suspect(
+    logZ_signal: float,
+    logZ_glitch: Mapping[str, float],
+    margin: Optional[float],
+) -> Optional[bool]:
+    """Flag events whose coherent signal fit looks like it never found the signal.
+
+    The signature of a failed optimisation (as opposed to a genuine preference
+    for the glitch model) is a signal evidence pinned near the noise reference
+    -- ``logZ_signal ~ 0``, i.e. the coherent model explains nothing at all --
+    while some per-detector glitch model finds substantial structure in the very
+    same data. Real data containing nothing gives small values for BOTH; real
+    data containing a single-detector glitch gives a large glitch evidence and a
+    signal evidence that is small but was genuinely searched for.
+
+    This flag CANNOT distinguish those cases on its own and must never be used
+    to reclassify an event -- it selects candidates for a more expensive refit
+    (see studies/flag_suspect_signal_fits.py). If the refit reproduces the same
+    answer the event was simply glitch-like; if it recovers a large signal
+    evidence, the original number was an optimiser artifact.
+
+    Returns None when the margin check is disabled or the inputs are unusable.
+    """
+    if margin is None or not np.isfinite(logZ_signal):
+        return None
+    finite_glitch = [
+        value for value in logZ_glitch.values() if np.isfinite(value)
+    ]
+    if not finite_glitch:
+        return None
+    return bool(
+        max(finite_glitch) - logZ_signal > margin and logZ_signal < margin
+    )
+
+
+def _per_detector_signal_seeds(
+    prepared,
+    signal_waveform,
+    latent_names,
+    extrinsics,
+    *,
+    rng_key,
+    latent_sigma,
+    log_amp_sigma,
+    num_starts: int,
+    maxiter: int,
+    nsm_kwargs: Mapping[str, object],
+) -> list[Dict[str, float]]:
+    """MAP latents from each detector alone, as starts for the joint coherent fit.
+
+    The coherent signal model shares one latent vector across detectors, so its
+    high-density basin occupies a far smaller fraction of the prior volume than
+    any single detector's does. A blind multistart search that comfortably finds
+    the basin for one detector can miss it entirely for the network -- observed
+    in the v043 campaign as loud injections (network SNR > 100) returning
+    logZ_signal ~ 0 with clean sampler diagnostics, because the optimiser never
+    located the signal at all.
+
+    Fitting each detector on its own is cheap (the same 5+1 dimensional problem
+    the single-detector campaign solves reliably) and its solution is a strong
+    guess for the joint one: a real coherent signal has nearly the same latents
+    in both detectors, differing only through the antenna response. These points
+    are supplied as extra starts, so they can only raise the MAP maximum -- the
+    blind design still runs and still wins when it finds something better.
+    """
+    seeds: list[Dict[str, float]] = []
+    for det_index, det in enumerate(prepared.detectors):
+        try:
+            single_likelihood = build_transient_likelihood(
+                [det],
+                signal_waveform,
+                trigger_time=prepared.trigger_time,
+                duration=prepared.duration,
+                post_trigger_duration=prepared.post_trigger_duration,
+            )
+            single_map = find_multistart_map(
+                single_likelihood,
+                latent_names=latent_names,
+                fixed_params=extrinsics,
+                rng_key=jax.random.fold_in(rng_key, det_index),
+                latent_sigma=latent_sigma,
+                log_amp_sigma=log_amp_sigma,
+                num_starts=num_starts,
+                start_design="sobol",
+                log_amp_starts=(-2.0, 0.0, 2.0, 4.0, 6.0),
+                maxiter=maxiter,
+                **nsm_kwargs,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # A seed is an optimisation convenience, never a correctness
+            # requirement: fall back to the blind design rather than failing
+            # the whole event.
+            print(
+                f"[initialization] WARNING: {det.name} seed fit failed "
+                f"({type(exc).__name__}: {exc}); continuing without it.",
+                flush=True,
+            )
+            continue
+        seeds.append(dict(single_map.values))
+    return seeds
+
+
 def _analytic_noise_logz(detector) -> float:
     """Log-evidence of the noise-only hypothesis, in the JIM likelihood convention.
 
@@ -904,6 +1006,8 @@ def run_bcr_posteriors(
     nsm_b: Optional[float] = None,
     verify_logz_threshold: Optional[float] = 50.0,
     amplitude_marginal: bool = True,
+    signal_map_seed_per_detector: bool = True,
+    suspect_signal_margin: Optional[float] = 20.0,
 ) -> Dict[str, Dict[str, float]]:
     if lnz_method.lower() != "nested" and num_chains < 2:
         raise ValueError("NUTS BCR analyses require at least two chains.")
@@ -979,6 +1083,25 @@ def run_bcr_posteriors(
 
     signal_rng = jax.random.fold_in(rng_master, 0)
     signal_map_result = None
+    signal_map_seeds = None
+    if (
+        map_initialization
+        and not use_nested
+        and signal_map_seed_per_detector
+        and len(prepared.detectors) > 1
+    ):
+        signal_map_seeds = _per_detector_signal_seeds(
+            prepared,
+            signal_waveform,
+            signal_latent_names,
+            extrinsics,
+            rng_key=jax.random.fold_in(signal_rng, 20_000),
+            latent_sigma=latent_sigma_signal,
+            log_amp_sigma=log_amp_sigma_signal,
+            num_starts=max(8, map_num_starts // 4),
+            maxiter=map_maxiter,
+            nsm_kwargs=nsm_kwargs,
+        )
     if use_nested:
         signal_result = run_nested_sampling(
             signal_likelihood,
@@ -1012,6 +1135,7 @@ def run_bcr_posteriors(
                 refine_starts_per_candidate=3,
                 refine_scale=0.15,
                 basin_radius=0.35,
+                initial_values=signal_map_seeds,
                 **nsm_kwargs,
             )
             _report_map_initialization("signal", signal_map_result)
@@ -1407,6 +1531,9 @@ def run_bcr_posteriors(
     results["bcr_log"] = log_bcr
     results["bcr"] = (
         float(np.exp(log_bcr)) if np.isfinite(log_bcr) else float("nan")
+    )
+    results["signal_fit_suspect"] = _signal_fit_suspect(
+        logZ_signal, logZ_glitch, suspect_signal_margin
     )
 
     n_failed = sum(

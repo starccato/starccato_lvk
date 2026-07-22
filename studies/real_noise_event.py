@@ -526,6 +526,7 @@ def analyse_manifest(
                 },
                 "logZ_noise_by_detector": r.get("noise", {}),
                 "log_odds": float(r["bcr_log"]),
+                "signal_fit_suspect": r.get("signal_fit_suspect"),
                 "evidence_failures": int(r.get("evidence_failures", 0)),
                 "evidence_fallbacks": int(r.get("evidence_fallbacks", 0)),
                 "evidence_status": r.get("evidence_status", {}),
