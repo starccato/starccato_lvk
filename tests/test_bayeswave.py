@@ -179,12 +179,20 @@ def test_parse_and_collect_result(tmp_path):
     evidence_path.write_text(
         "signal 12.5 0.3\n" "glitch 8.0 0.4\n" "noise -1.0 0.2\n"
     )
-    stats = output / "post/signal/signal_stats.dat.geo"
-    stats.parent.mkdir(parents=True)
-    stats.write_text(
-        "# map_D bayesfactor snr time duration frequency bandwidth h_max "
-        "t_at_h_max f_at_max_amp\n"
-        "3 10 14.25 1260000002 0.1 500 200 1e-22 1260000002 510\n"
+    # Reconstructed SNR is read per-detector (the network .geo file writes
+    # snr=0) and combined in quadrature: hypot(3, 4) = 5.
+    stats_dir = output / "post/signal"
+    stats_dir.mkdir(parents=True)
+    header = ("# map_D bayesfactor snr time duration frequency bandwidth h_max "
+              "t_at_h_max f_at_max_amp\n")
+    (stats_dir / "signal_stats.dat.geo").write_text(
+        header + "1 1000 0 1260000002 0 0 0 0 1260000002 0\n"
+    )
+    (stats_dir / "signal_stats_H1.dat").write_text(
+        header + "3 10 3.0 1260000002 0.1 500 200 1e-22 1260000002 510\n"
+    )
+    (stats_dir / "signal_stats_L1.dat").write_text(
+        header + "3 10 4.0 1260000002 0.1 500 200 1e-22 1260000002 510\n"
     )
 
     parsed = parse_evidence(evidence_path)
@@ -211,7 +219,8 @@ def test_parse_and_collect_result(tmp_path):
     )
     assert result["log_bayeswave_signal_glitch"] == 4.5
     assert result["log_bayeswave_signal_glitch_uncertainty"] == 0.5
-    assert result["signal_reconstructed_snr_median"] == 14.25
+    assert result["signal_reconstructed_snr_median"] == pytest.approx(5.0)
+    assert result["signal_reconstructed_snr_per_detector"] == {"H1": 3.0, "L1": 4.0}
     assert result["target_snr"] == 17.5
 
 
