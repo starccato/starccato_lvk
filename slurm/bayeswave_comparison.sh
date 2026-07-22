@@ -1,38 +1,50 @@
 #!/bin/bash
-# End-to-end BayesWave-vs-lnO comparison for ONE event.
+# BayesWave-vs-lnO comparison for ONE event: BayesWave (+ optionally our NUTS
+# posterior) plus a comparison plot. Per-index events are deterministic
+# (seeded by index), so e<N> here is the same physical event as e<N> in any
+# lnO campaign on this code.
 #
-# One array task == one catalogue index, and runs three stages in order:
-#   1. starccato_lvk pipeline: generate the event data AND our posterior
-#      (real_noise_event.py --save-artifacts, so analysis/ is kept not pruned).
-#      Per-index events are deterministic (seeded by index), so e<N> here is
-#      the same physical event as e<N> in any lnO campaign on this code.
+# Run slurm/bayeswave_prep.sh FIRST. Prep (fetching/building the strain
+# bundles) OOM'd when it shared a job with this script at --mem=4G -- it is
+# I/O-heavy in a way that does not fit a small memory budget, so it is now a
+# separate, dedicated job. This script assumes the manifest + bundles already
+# exist and errors clearly if they do not.
+#
+# Stages (each idempotent -- skipped when its output exists, so a resubmit
+# resumes rather than redoing work; BayesWave itself resumes from checkpoint):
+#   1. (optional, DATA_STAGE=analysis) our NUTS posterior, for the comparison
+#      plot -- --save-artifacts keeps analysis/ instead of pruning it.
 #   2. BayesWave, fixed sky (the production setting -- matches lnO, which also
 #      analyses at the known per-event sky). RUN_FREESKY=1 adds the free-sky
 #      diagnostic in parallel.
 #   3. Comparison plot (our VAE posterior vs BayesWave reconstruction, both
 #      whitened) and a one-line lnBF summary.
 #
-# Each stage is idempotent: it is skipped when its output already exists, so a
-# resubmit resumes rather than redoing work (BayesWave itself resumes from its
-# checkpoint).
-#
 # Required submission variable:
-#   CAMPAIGN_ID   immutable tag, e.g. bwcomp_20260722
-# Examples (injected CCSNe, then real glitches, same campaign):
-#   sbatch --array=0-3 \
-#     --export=ALL,CAMPAIGN_ID=bwcomp_20260722 slurm/bayeswave_comparison.sh
-#   sbatch --array=0-3 \
-#     --export=ALL,CAMPAIGN_ID=bwcomp_20260722,CLASS=real_glitch \
-#     slurm/bayeswave_comparison.sh
-# Population run (~100/class, after validating the pilot): prep-only data, no
-# per-event plots -- lnO comes from the existing campaign at the same indices:
-#   sbatch --array=0-99%50 \
-#     --export=ALL,CAMPAIGN_ID=bwcomp_20260722,DATA_STAGE=prep,RUN_PLOTS=0 \
+#   CAMPAIGN_ID   immutable tag, matching the bayeswave_prep.sh run
+#
+# Pilot (want the comparison plot -- runs our NUTS posterior too):
+#   PREP=$(sbatch --parsable --array=0-3 \
+#     --export=ALL,CAMPAIGN_ID=bwcomp_20260723 slurm/bayeswave_prep.sh)
+#   sbatch --array=0-3 --dependency=aftercorr:${PREP} \
+#     --export=ALL,CAMPAIGN_ID=bwcomp_20260723,DATA_STAGE=analysis \
 #     slurm/bayeswave_comparison.sh          # and again with CLASS=real_glitch
+#
+# Population (~100/class, after validating the pilot): BayesWave only, no NUTS
+# re-run and no plots -- lnO comes from the existing campaign at the same
+# indices, paired offline by (index, class):
+#   PREP=$(sbatch --parsable --array=0-99%50 \
+#     --export=ALL,CAMPAIGN_ID=bwcomp_20260723 slurm/bayeswave_prep.sh)
+#   sbatch --array=0-99%50 --dependency=aftercorr:${PREP} \
+#     --export=ALL,CAMPAIGN_ID=bwcomp_20260723,RUN_DATA=0,RUN_PLOTS=0 \
+#     slurm/bayeswave_comparison.sh          # and again with CLASS=real_glitch
+#
+# (aftercorr starts each analysis task as soon as its OWN prep task finishes;
+# afterok:${PREP} waits for the whole prep array first, if preferred.)
 #
 # Common optional variables:
 #   CLASS (inj_ccsn), DETECTORS ("H1 L1"), RUN_FREESKY (0), PARALLEL (1)
-#   RUN_DATA/RUN_BW/RUN_PLOTS, INDEX_OFFSET
+#   RUN_DATA (1)/RUN_BW/RUN_PLOTS, DATA_STAGE (both), INDEX_OFFSET
 #   BW_NITER, BW_BURNIN, BW_NCHAIN, BW_THREADS, BW_CKPT_HRS, PLOT_IFO
 #   VENV, BAYESWAVE_ENV, RESULTS_ROOT, SNR_REFERENCE_DET
 
