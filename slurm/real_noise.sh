@@ -9,6 +9,7 @@
 #
 # Common optional variables:
 #   STAGE, CLASS, BLIP_IFO, GLITCH_DET, SNR_REFERENCE_DET, RESULTS_ROOT, VENV
+#   REQUIRE_CLEAN_NOISE, MAX_MEAN_WHITENED_POWER
 #   FLOW, FMAX, NUM_WARMUP, NUM_SAMPLES, NUM_CHAINS
 #   TARGET_ACCEPT_PROB, MAX_TREE_DEPTH, MAP_NUM_STARTS, MAP_MAXITER
 #
@@ -54,6 +55,10 @@ GLITCH_DET=${GLITCH_DET:-${BLIP_IFO}}
 # campaign). Set it to the detector that campaign analysed. Empty = normalise on
 # the network SNR, which redistributes a fixed budget instead of adding signal.
 SNR_REFERENCE_DET=${SNR_REFERENCE_DET:-}
+# Reject events whose noise segment is not described by its off-source PSD
+# (unnotched violin modes etc). Set REQUIRE_CLEAN_NOISE=1 to enable.
+REQUIRE_CLEAN_NOISE=${REQUIRE_CLEAN_NOISE:-}
+MAX_MEAN_WHITENED_POWER=${MAX_MEAN_WHITENED_POWER:-10.0}
 PREP_CLASSES=${PREP_CLASSES:-"noise inj_ccsn real_glitch"}
 FLOW=${FLOW:-300}
 FMAX=${FMAX:-800}
@@ -136,6 +141,9 @@ if [[ -n "${CLASS}" ]]; then
 fi
 if [[ -n "${SNR_REFERENCE_DET}" ]]; then
   RUNNER_ARGS+=(--snr-reference-det "${SNR_REFERENCE_DET}")
+fi
+if [[ -n "${REQUIRE_CLEAN_NOISE}" ]]; then
+  RUNNER_ARGS+=(--require-clean-noise --max-mean-whitened-power "${MAX_MEAN_WHITENED_POWER}")
 fi
 
 srun "${VENV}/bin/python" studies/real_noise_event.py "${RUNNER_ARGS[@]}"

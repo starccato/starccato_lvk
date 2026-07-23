@@ -38,6 +38,7 @@ import numpy as np
 from starccato_lvk.analysis import run_bcr_posteriors
 from starccato_lvk.analysis.multidet_data_prep import (
     prepare_multi_detector_data,
+    whitened_band_power,
 )
 from starccato_lvk.acquisition.io.glitch_catalog import (
     get_blip_trigger_time,
@@ -55,6 +56,10 @@ from snr_vs_odds_roc_coherent import (
 
 from starccato_jax.data.training_data import TrainValData
 from starccato_jax.waveforms import get_model
+
+class CleanSegmentRejected(RuntimeError):
+    """Raised when a noise segment fails the whitening gate at preparation."""
+
 
 CLASSES = ("noise", "inj_ccsn", "inj_glitch", "real_glitch")
 PRODUCTION_CLASSES = ("noise", "inj_ccsn", "real_glitch")
@@ -180,6 +185,8 @@ def prep_index(
     classes: Iterable[str] = PRODUCTION_CLASSES,
     campaign_id: str | None = None,
     snr_reference_det: str | None = None,
+    require_clean_noise: bool = False,
+    max_mean_whitened_power: float = 10.0,
 ) -> dict:
     """Build only the requested event classes and write a versioned manifest."""
     classes = tuple(dict.fromkeys(classes))
@@ -240,6 +247,37 @@ def prep_index(
             )
             for detector in detectors
         }
+
+    # Data quality of the NOISE segment, which the noise and injected classes
+    # share. Recorded for every event, and optionally used to reject the segment
+    # outright: a chunk whose lines are not whitened by the off-source PSD makes
+    # every evidence on it unreliable, and no downstream statistic can undo that.
+    noise_dq = {}
+    if needs_noise:
+        dq_prep = prepare_multi_detector_data(
+            detectors, bundle_paths=noise_b, flow=flow, fmax=fmax
+        )
+        noise_dq = {
+            name: whitened_band_power(data)
+            for name, data in dq_prep.detector_data.items()
+        }
+        bad = sorted(
+            name
+            for name, wp in noise_dq.items()
+            if wp["mean"] > max_mean_whitened_power
+        )
+        if bad:
+            message = (
+                f"noise segment fails whitening in {', '.join(bad)} "
+                + ", ".join(
+                    f"{n} mean={noise_dq[n]['mean']:.1f}" for n in bad
+                )
+                + f" (limit {max_mean_whitened_power})"
+            )
+            if require_clean_noise:
+                _log(index, f"SKIPPING: {message}")
+                raise CleanSegmentRejected(message)
+            _log(index, f"WARNING: {message}")
 
     prepared = None
     if {"inj_ccsn", "inj_glitch"}.intersection(classes):
@@ -347,6 +385,7 @@ def prep_index(
         "sky": sky,
         "snr": snr,
         "snr_by_detector": snr_by_detector,
+        "noise_data_quality": noise_dq,
         "injection": {
             "target_snr": target,
             # "network": target_snr IS the network SNR (fixed-budget comparison).
@@ -527,6 +566,8 @@ def analyse_manifest(
                 "logZ_noise_by_detector": r.get("noise", {}),
                 "log_odds": float(r["bcr_log"]),
                 "signal_fit_suspect": r.get("signal_fit_suspect"),
+                "data_quality": r.get("data_quality", {}),
+                "data_quality_failed": r.get("data_quality_failed", []),
                 "evidence_failures": int(r.get("evidence_failures", 0)),
                 "evidence_fallbacks": int(r.get("evidence_fallbacks", 0)),
                 "evidence_status": r.get("evidence_status", {}),
@@ -662,6 +703,22 @@ def main() -> None:
         ),
     )
     p.add_argument("--no-marginal", action="store_true")
+    p.add_argument(
+        "--require-clean-noise",
+        action="store_true",
+        help="Reject an event at preparation when its noise segment fails the "
+             "whitening check in ANY detector. A segment whose lines are not "
+             "described by the off-source PSD makes every evidence on it "
+             "unreliable, so for a methods campaign it is cleaner to select "
+             "usable segments up front than to filter afterwards.",
+    )
+    p.add_argument(
+        "--max-mean-whitened-power",
+        type=float,
+        default=10.0,
+        help="Whitening limit for --require-clean-noise (mean per-bin whitened "
+             "power; 1.0 is perfect).",
+    )
     p.add_argument(
         "--keep-bundles",
         action="store_true",
@@ -801,6 +858,8 @@ def main() -> None:
                 classes=prep_classes,
                 campaign_id=campaign_id,
                 snr_reference_det=snr_reference_det,
+                require_clean_noise=args.require_clean_noise,
+                max_mean_whitened_power=args.max_mean_whitened_power,
             )
             _log(args.index, f"prep done -> {manifest_path}")
     if args.stage in ("analysis", "both"):
