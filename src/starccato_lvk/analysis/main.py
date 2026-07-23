@@ -38,7 +38,10 @@ from .post_proc.jim_plots import (
     plot_posterior_mean_waveform,
     plot_posterior_predictive_from_samples,
 )
-from .multidet_data_prep import prepare_multi_detector_data
+from .multidet_data_prep import (
+    prepare_multi_detector_data,
+    whitened_band_power,
+)
 
 DEFAULT_EXTRINSICS = {
     "t_c": 0.0,
@@ -290,6 +293,7 @@ def _nested_evidence(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: Optional[float] = None,
+    nsm_per_detector: bool = True,
     marginalize_amplitude: bool = False,
 ) -> EvidenceResult:
     """Run nested sampling purely to obtain a fallback log-evidence."""
@@ -306,6 +310,7 @@ def _nested_evidence(
         noise_scale_marginal=noise_scale_marginal,
         nsm_a=nsm_a,
         nsm_b=nsm_b,
+        nsm_per_detector=nsm_per_detector,
         marginalize_amplitude=marginalize_amplitude,
     )
     if not np.isfinite(run.logZ):
@@ -1004,10 +1009,12 @@ def run_bcr_posteriors(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: Optional[float] = None,
+    nsm_per_detector: bool = True,
     verify_logz_threshold: Optional[float] = 50.0,
     amplitude_marginal: bool = True,
     signal_map_seed_per_detector: bool = True,
     suspect_signal_margin: Optional[float] = 20.0,
+    dq_max_mean_whitened_power: float = 10.0,
 ) -> Dict[str, Dict[str, float]]:
     if lnz_method.lower() != "nested" and num_chains < 2:
         raise ValueError("NUTS BCR analyses require at least two chains.")
@@ -1020,6 +1027,7 @@ def run_bcr_posteriors(
         noise_scale_marginal=noise_scale_marginal,
         nsm_a=nsm_a,
         nsm_b=nsm_b,
+        nsm_per_detector=nsm_per_detector,
         marginalize_amplitude=amplitude_marginal,
     )
 
@@ -1064,6 +1072,33 @@ def run_bcr_posteriors(
         "nuts_diagnostics": {},
         "map_initialization": {},
     }
+
+    # Data quality, recorded for EVERY event. The whitening check already existed
+    # but only ever emitted a warning into the job log, so the v043 campaign
+    # could not tell a poorly-whitened segment from a genuine non-detection
+    # after the fact. Recording it makes that separable in post-processing.
+    results["data_quality"] = {
+        name: whitened_band_power(data)
+        for name, data in prepared.detector_data.items()
+    }
+    dq_failed = sorted(
+        name
+        for name, wp in results["data_quality"].items()
+        if wp["mean"] > dq_max_mean_whitened_power
+    )
+    results["data_quality_failed"] = dq_failed
+    if dq_failed:
+        print(
+            "[data-quality] WARNING: "
+            + ", ".join(
+                f"{n} mean whitened power "
+                f"{results['data_quality'][n]['mean']:.1f}"
+                for n in dq_failed
+            )
+            + f" exceeds {dq_max_mean_whitened_power}. Evidences from these "
+            "detectors are unreliable (unnotched lines / non-stationarity).",
+            flush=True,
+        )
 
     # Coherent signal run
     signal_model_obj = get_model(signal_model)
@@ -1187,6 +1222,7 @@ def run_bcr_posteriors(
                 noise_scale_marginal=noise_scale_marginal,
                 nsm_a=nsm_a,
                 nsm_b=nsm_b,
+                nsm_per_detector=nsm_per_detector,
             )
 
     _report_effective_sample_sizes(
@@ -1405,6 +1441,7 @@ def run_bcr_posteriors(
                     noise_scale_marginal=noise_scale_marginal,
                     nsm_a=nsm_a,
                     nsm_b=nsm_b,
+                    nsm_per_detector=nsm_per_detector,
                 )
 
         _report_effective_sample_sizes(
