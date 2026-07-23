@@ -139,6 +139,7 @@ def find_multistart_map(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: float | None = None,
+    nsm_per_detector: bool = True,
     marginalize_amplitude: bool = False,
 ) -> MAPInitializationResult:
     """Find a local posterior mode for NUTS without nested sampling.
@@ -192,6 +193,7 @@ def find_multistart_map(
         noise_scale_marginal=noise_scale_marginal,
         nsm_a=nsm_a,
         nsm_b=nsm_b,
+        nsm_per_detector=nsm_per_detector,
         marginalize_amplitude=marginalize_amplitude,
     )
     logpost = build_log_density_fn(model, {})
@@ -444,6 +446,7 @@ def _build_numpyro_model(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: float | None = None,
+    nsm_per_detector: bool = True,
     sample_sky: bool = False,
     t_c_sigma: float = 0.01,
     marginalize_amplitude: bool = False,
@@ -476,6 +479,7 @@ def _build_numpyro_model(
     log_amp_sigma = float(log_amp_sigma)
 
     dd_total = n_total = b_val = None
+    nsm_terms = None
     if noise_scale_marginal:
         from .noise_evidence import band_quantities
 
@@ -483,6 +487,34 @@ def _build_numpyro_model(
         dd_total = float(sum(q.dd for q in qs))
         n_total = int(sum(q.n_bins for q in qs))
         b_val = float(nsm_a - 1.0) if nsm_b is None else float(nsm_b)
+        if nsm_per_detector and len(likelihood.detectors) > 1:
+            # PER-DETECTOR eta. A single global eta is inferred from the pooled
+            # <d|d>, so one detector whose analysis chunk is poorly whitened
+            # (unnotched violin modes ring up between the off-source PSD estimate
+            # and the segment) inflates eta for EVERY detector and suppresses a
+            # perfectly clean signal elsewhere: measured on event e31, a coherent
+            # fit worth 780 nats was compressed to 6.9 because L1 carried
+            # <d|d>/2N = 457 while H1 sat at 1.35. Independent per-detector eta
+            # confines that penalty to the detector that earned it, which is what
+            # makes a two-detector analysis no worse than the best single one.
+            nsm_terms = [
+                (
+                    type(likelihood)(
+                        detectors=[det],
+                        waveform=likelihood.waveform,
+                        trigger_time=likelihood.trigger_time,
+                    ),
+                    float(q.dd),
+                    int(q.n_bins),
+                )
+                for det, q in zip(likelihood.detectors, qs)
+            ]
+
+    def _nsm(resid, dd, n_bins):
+        """eta-marginalised log-likelihood for one noise scale (0 at h=0)."""
+        return -(n_bins + nsm_a) * (
+            jnp.log(resid / 2.0 + b_val) - jnp.log(dd / 2.0 + b_val)
+        )
 
     if marginalize_amplitude:
         u_grid, u_log_prior, u_log_du = _amplitude_grid(log_amp_sigma)
@@ -511,26 +543,43 @@ def _build_numpyro_model(
             params["psi"] = numpyro.sample("psi", dist.Uniform(0.0, jnp.pi))
             params["t_c"] = numpyro.sample("t_c", dist.Normal(0.0, t_c_sigma))
         if marginalize_amplitude:
-            b, c = _amplitude_quadratic(likelihood, params)
-            log_like_u = amp_grid * b - 0.5 * amp_grid**2 * c
-            if noise_scale_marginal:
-                resid = dd_total - 2.0 * log_like_u
-                log_like_u = -(n_total + nsm_a) * (
-                    jnp.log(resid / 2.0 + b_val)
-                    - jnp.log(dd_total / 2.0 + b_val)
-                )
+            if nsm_terms is not None:
+                # Sum the per-detector eta-marginals at each amplitude, then
+                # integrate over the amplitude once (the detectors share A but
+                # not eta).
+                log_like_u = 0.0
+                for sub_like, dd_i, n_i in nsm_terms:
+                    b_i, c_i = _amplitude_quadratic(sub_like, params)
+                    gauss_i = amp_grid * b_i - 0.5 * amp_grid**2 * c_i
+                    log_like_u = log_like_u + _nsm(
+                        dd_i - 2.0 * gauss_i, dd_i, n_i
+                    )
+            else:
+                b, c = _amplitude_quadratic(likelihood, params)
+                log_like_u = amp_grid * b - 0.5 * amp_grid**2 * c
+                if noise_scale_marginal:
+                    log_like_u = _nsm(
+                        dd_total - 2.0 * log_like_u, dd_total, n_total
+                    )
             log_like = (
                 jax.scipy.special.logsumexp(log_like_u + u_log_prior)
                 + u_log_du
             )
         else:
-            log_like = likelihood.evaluate(params, None)
-            if noise_scale_marginal:
-                resid = dd_total - 2.0 * log_like  # R(theta) = <d-h|d-h>
-                log_like = -(n_total + nsm_a) * (
-                    jnp.log(resid / 2.0 + b_val)
-                    - jnp.log(dd_total / 2.0 + b_val)
-                )
+            if nsm_terms is not None:
+                log_like = 0.0
+                for sub_like, dd_i, n_i in nsm_terms:
+                    gauss_i = sub_like.evaluate(params, None)
+                    log_like = log_like + _nsm(
+                        dd_i - 2.0 * gauss_i, dd_i, n_i
+                    )
+            else:
+                log_like = likelihood.evaluate(params, None)
+                if noise_scale_marginal:
+                    # R(theta) = <d-h|d-h>
+                    log_like = _nsm(
+                        dd_total - 2.0 * log_like, dd_total, n_total
+                    )
         numpyro.factor("log_likelihood", log_like)
 
     if sample_sky:
@@ -554,6 +603,7 @@ def draw_conditional_log_amp(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: float | None = None,
+    nsm_per_detector: bool = True,
 ) -> np.ndarray:
     """Draw ``log_amp`` from its exact 1-D conditional for each latent sample.
 
@@ -622,6 +672,7 @@ def run_numpyro_sampling(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: float | None = None,
+    nsm_per_detector: bool = True,
     sample_sky: bool = False,
     marginalize_amplitude: bool = False,
 ) -> LikelihoodRunResult:
@@ -648,6 +699,7 @@ def run_numpyro_sampling(
         noise_scale_marginal=noise_scale_marginal,
         nsm_a=nsm_a,
         nsm_b=nsm_b,
+        nsm_per_detector=nsm_per_detector,
         sample_sky=sample_sky,
         marginalize_amplitude=marginalize_amplitude,
     )
@@ -738,6 +790,7 @@ def run_nested_sampling(
     noise_scale_marginal: bool = False,
     nsm_a: float = 100.0,
     nsm_b: float | None = None,
+    nsm_per_detector: bool = True,
     sample_sky: bool = False,
     marginalize_amplitude: bool = False,
 ) -> LikelihoodRunResult:
@@ -751,6 +804,7 @@ def run_nested_sampling(
         noise_scale_marginal=noise_scale_marginal,
         nsm_a=nsm_a,
         nsm_b=nsm_b,
+        nsm_per_detector=nsm_per_detector,
         sample_sky=sample_sky,
         marginalize_amplitude=marginalize_amplitude,
     )
