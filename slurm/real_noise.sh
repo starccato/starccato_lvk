@@ -32,7 +32,7 @@
 # detector, so cost is somewhat but not double the 1-detector run) rather than
 # tight to that single 1-detector data point. Re-check with seff/job-report
 # after the first H1+L1 pilot batch and tighten further before the full array.
-#SBATCH --mem=4G
+#SBATCH --mem=8G
 #SBATCH --time=00:30:00
 #SBATCH --output=slurm/logs/nml_%A_%a.out
 #SBATCH --error=slurm/logs/nml_%A_%a.err
