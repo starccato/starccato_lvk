@@ -85,6 +85,15 @@ def main() -> None:
     output = args.outdir / "results.json"
     output.write_text(json.dumps(rows, indent=2, sort_keys=True) + "\n")
     done = set(keys)
+    rejected_files = sorted(
+        glob.glob(str(args.outdir / "e*" / "rejected.json"))
+    )
+    rejected = [json.loads(Path(path).read_text()) for path in rejected_files]
+    rejected_indices = {
+        int(row["index"])
+        for row in rejected
+        if row.get("status") == "rejected"
+    }
     if args.expected_start is not None:
         indices = range(args.expected_start, args.expected_stop + 1)
     else:
@@ -93,7 +102,7 @@ def main() -> None:
         (index, cls)
         for index in indices
         for cls in args.expected_classes
-        if (index, cls) not in done
+        if (index, cls) not in done and index not in rejected_indices
     ]
     failure_files = sorted(
         glob.glob(str(args.outdir / "failures" / "e*_*.json"))
@@ -123,6 +132,11 @@ def main() -> None:
                 f"  e{failure['index']}:{failure['cls']} "
                 f"{failure['error_type']}: {failure['error']}"
             )
+    if rejected_indices:
+        print(
+            f"{len(rejected_indices)} trigger(s) excluded after strain acquisition failure: "
+            + ",".join(str(index) for index in sorted(rejected_indices))
+        )
 
     collection = {
         "campaign_ids": campaign_ids,
@@ -135,6 +149,7 @@ def main() -> None:
             for cls in args.expected_classes
         },
         "missing": [{"index": index, "cls": cls} for index, cls in missing],
+        "rejected_triggers": rejected,
         "n_failures": len(failures),
     }
     (args.outdir / "collection_summary.json").write_text(

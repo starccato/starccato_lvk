@@ -96,7 +96,15 @@ def load_run(outdir: Path) -> Optional[Dict[str, dict]]:
     if combined.exists():
         rows = json.loads(combined.read_text())
     else:
-        files = glob.glob(str(outdir / "results" / "e*_*.json"))
+        # e*_*.json also matches the chisq baseline rows (e0_noise_baseline.json)
+        # and any refit rows, neither of which carry log_odds. Reading a raw
+        # campaign directory (rather than a consolidated results.json) must skip
+        # them or the load fails on the first baseline file it happens to hit.
+        files = [
+            f
+            for f in glob.glob(str(outdir / "results" / "e*_*.json"))
+            if not f.endswith(("_baseline.json", ".refit.json"))
+        ]
         rows = [json.loads(Path(f).read_text()) for f in files]
     if not rows:
         return None
