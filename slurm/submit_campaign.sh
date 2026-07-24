@@ -46,6 +46,9 @@ THROTTLE=${THROTTLE:-50}
 SNR_REFERENCE_DET=${SNR_REFERENCE_DET:-}
 REQUIRE_CLEAN_NOISE=${REQUIRE_CLEAN_NOISE:-}
 MAX_MEAN_WHITENED_POWER=${MAX_MEAN_WHITENED_POWER:-10.0}
+# Keep strain bundles after analysis (forwarded to slurm/real_noise.sh). Set
+# KEEP_BUNDLES=1 when BayesWave will run on the H1+L1 cohort afterwards.
+KEEP_BUNDLES=${KEEP_BUNDLES:-}
 CLASSES=(noise inj_ccsn real_glitch)
 DATA_DIR=src/starccato_lvk/acquisition/io/data
 DEFAULT_COHORTS=("L1|L1" "H1|H1" "H1 L1|L1" "H1 L1|H1")
@@ -108,6 +111,7 @@ sbatch_array() {
   [[ -n ${cls} ]] && exports+=",CLASS=${cls}"
   [[ -n ${SNR_REFERENCE_DET} ]] && exports+=",SNR_REFERENCE_DET=${SNR_REFERENCE_DET}"
   [[ -n ${REQUIRE_CLEAN_NOISE} ]] && exports+=",REQUIRE_CLEAN_NOISE=${REQUIRE_CLEAN_NOISE},MAX_MEAN_WHITENED_POWER=${MAX_MEAN_WHITENED_POWER}"
+  [[ -n ${KEEP_BUNDLES} ]] && exports+=",KEEP_BUNDLES=${KEEP_BUNDLES}"
   [[ -n ${dep} ]] && dep_arg=(--dependency="${dep}")
   # command substitution does not inherit errexit, so a failure (typically
   # QOSMaxSubmitJobPerUserLimit) must be caught explicitly here or a dependent

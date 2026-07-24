@@ -59,6 +59,10 @@ SNR_REFERENCE_DET=${SNR_REFERENCE_DET:-}
 # (unnotched violin modes etc). Set REQUIRE_CLEAN_NOISE=1 to enable.
 REQUIRE_CLEAN_NOISE=${REQUIRE_CLEAN_NOISE:-}
 MAX_MEAN_WHITENED_POWER=${MAX_MEAN_WHITENED_POWER:-10.0}
+# Keep the strain bundles after all classes finish (default: prune for inode
+# hygiene). Required for the H1+L1 cohort if BayesWave will run afterwards --
+# it reads these exact bundles to build its frames.
+KEEP_BUNDLES=${KEEP_BUNDLES:-}
 PREP_CLASSES=${PREP_CLASSES:-"noise inj_ccsn real_glitch"}
 FLOW=${FLOW:-300}
 FMAX=${FMAX:-800}
@@ -144,6 +148,9 @@ if [[ -n "${SNR_REFERENCE_DET}" ]]; then
 fi
 if [[ -n "${REQUIRE_CLEAN_NOISE}" ]]; then
   RUNNER_ARGS+=(--require-clean-noise --max-mean-whitened-power "${MAX_MEAN_WHITENED_POWER}")
+fi
+if [[ -n "${KEEP_BUNDLES}" ]]; then
+  RUNNER_ARGS+=(--keep-bundles)
 fi
 
 srun "${VENV}/bin/python" studies/real_noise_event.py "${RUNNER_ARGS[@]}"
