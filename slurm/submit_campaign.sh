@@ -49,7 +49,12 @@ MAX_MEAN_WHITENED_POWER=${MAX_MEAN_WHITENED_POWER:-10.0}
 CLASSES=(noise inj_ccsn real_glitch)
 DATA_DIR=src/starccato_lvk/acquisition/io/data
 DEFAULT_COHORTS=("L1|L1" "H1|H1" "H1 L1|L1" "H1 L1|H1")
-read -r -a COHORT_LIST <<< "${COHORTS:-}"
+# One cohort per line ("DETECTORS|BLIP_IFO"), so a network cohort's internal
+# space (e.g. "H1 L1|L1") survives: splitting on spaces would corrupt it.
+COHORT_LIST=()
+while IFS= read -r _cohort; do
+  [[ -n ${_cohort} ]] && COHORT_LIST+=("${_cohort}")
+done <<< "${COHORTS:-}"
 (( ${#COHORT_LIST[@]} )) || COHORT_LIST=("${DEFAULT_COHORTS[@]}")
 
 cd "$(dirname "$0")/.."
