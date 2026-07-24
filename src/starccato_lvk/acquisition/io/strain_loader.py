@@ -124,7 +124,7 @@ def load_analysis_chunk_and_psd(
     _require_finite_strain(psd_chunk.value, psd_chunk.times.value, "PSD")
     psd = generate_psd(psd_chunk)
     if not np.isfinite(psd.value).all() or np.any(psd.value <= 0):
-        raise ValueError(
+        raise StrainDataUnavailable(
             "Generated PSD contains non-finite or non-positive values; "
             "the selected strain window cannot be used for inference."
         )
@@ -138,7 +138,7 @@ def _require_finite_strain(values: np.ndarray, times: np.ndarray, role: str) -> 
     if finite.all():
         return
     bad_times = np.asarray(times)[~finite]
-    raise ValueError(
+    raise StrainDataUnavailable(
         f"{role} strain contains {bad_times.size} non-finite samples between "
         f"GPS {bad_times.min():.6f} and {bad_times.max():.6f}; "
         "choose another trigger time or repair the local strain mirror."
