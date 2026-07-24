@@ -14,6 +14,19 @@ from .. import config
 
 DataFetcher = Callable[[float, float], TimeSeries]
 
+
+class StrainFetchFailed(RuntimeError):
+    """The requested strain interval could not be fetched from GWOSC."""
+
+
+class StrainDataUnavailable(StrainFetchFailed):
+    """The requested strain interval is confirmed absent from every source.
+
+    This narrower subtype preserves the distinction from DNS, authentication,
+    and other service failures in any recorded trigger flag.
+    """
+
+
 # Analysis segment length, in seconds. This sets the frequency resolution of the
 # likelihood (df = 1/ANALYSIS_DURATION). It is matched to the PSD FFT length (see
 # ``generate_psd``, fftlength=4 s -> 0.25 Hz) so the data and PSD share a grid and
@@ -206,6 +219,40 @@ def _remote_data_fetcher(detector: str) -> DataFetcher:
     return fetch
 
 
+def _exception_tree(exc: BaseException):
+    """Yield an exception, its nested exception-group members, and causes."""
+    seen: set[int] = set()
+    pending = [exc]
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        yield current
+        if isinstance(current, BaseExceptionGroup):
+            pending.extend(current.exceptions)
+        if current.__cause__ is not None:
+            pending.append(current.__cause__)
+        if current.__context__ is not None:
+            pending.append(current.__context__)
+
+
+def _is_confirmed_missing_data(exc: BaseException) -> bool:
+    """Recognise only definitive remote "not found" responses.
+
+    GWpy wraps backend errors in an exception group, so inspect every nested
+    exception.  A connection error is intentionally *not* a missing-data
+    result: marking it terminal would hide a recoverable service outage.
+    """
+    for item in _exception_tree(exc):
+        if isinstance(item, FileNotFoundError):
+            return True
+        response = getattr(item, "response", None)
+        if getattr(response, "status_code", None) in {404, 410}:
+            return True
+    return False
+
+
 def _detector_cat3_online(detector: str, gps_start: float, gps_end: float) -> bool:
     """Return True if detector passes CBC CAT3 flag over the full interval.
 
@@ -259,7 +306,12 @@ def load_strain_segment(
                     )
                 return remote_fetch(gps_start, gps_end)
             except Exception as fetch_err:
-                raise RuntimeError(
+                if _is_confirmed_missing_data(fetch_err):
+                    raise StrainDataUnavailable(
+                        f"No GWOSC strain data for {det} covering "
+                        f"GPS {gps_start}-{gps_end}."
+                    ) from fetch_err
+                raise StrainFetchFailed(
                     "Failed to fetch strain data from GWOSC. "
                     "Check network, verify detector selection, or use a time with CAT3 data."
                 ) from fetch_err

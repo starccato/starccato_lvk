@@ -44,6 +44,10 @@ from starccato_lvk.acquisition.io.glitch_catalog import (
     get_blip_trigger_time,
     load_blip_glitch_catalog,
 )
+from starccato_lvk.acquisition.io.strain_loader import (
+    StrainDataUnavailable,
+    StrainFetchFailed,
+)
 
 from chisq_baseline import run_index as run_baseline_index
 from real_noise_io import build_bundle, inject_into_bundle
@@ -171,6 +175,44 @@ def _runtime_provenance() -> dict:
 
 def _log(index: int, msg: str) -> None:
     print(f"[e{index}] {msg}", flush=True)
+
+
+def _record_unavailable_trigger(
+    *,
+    index: int,
+    outdir: Path,
+    campaign_id: str,
+    detectors: list[str],
+    blip_ifo: str,
+    error: StrainFetchFailed,
+) -> Path:
+    """Persist an auditable catalogue flag for a failed strain acquisition.
+
+    No manifest is created because no analysis inputs exist.  The separate
+    record lets the submitter distinguish a flagged trigger from work that has
+    not yet run, without pretending the trigger produced a result.
+    """
+    path = outdir / f"e{index}" / "rejected.json"
+    _write_json_atomic(
+        path,
+        {
+            "schema_version": 1,
+            "status": "rejected",
+            "reason": (
+                "strain_data_unavailable"
+                if isinstance(error, StrainDataUnavailable)
+                else "strain_fetch_failed"
+            ),
+            "index": index,
+            "campaign_id": campaign_id,
+            "detectors": detectors,
+            "blip_ifo": blip_ifo,
+            "error_type": type(error).__name__,
+            "error": str(error),
+            "recorded_utc": datetime.now(timezone.utc).isoformat(),
+        },
+    )
+    return path
 
 
 def prep_index(
@@ -846,21 +888,39 @@ def main() -> None:
                     "Refusing to rebuild a manifest with existing analysis "
                     f"results: {existing_results}. Use a fresh campaign output directory."
                 )
-            prep_index(
-                args.index,
-                detectors,
-                glitch_det,
-                (args.flow, args.fmax),
-                args.snr_grid,
-                args.noise_offset,
-                args.outdir,
-                blip_ifo=args.blip_ifo,
-                classes=prep_classes,
-                campaign_id=campaign_id,
-                snr_reference_det=snr_reference_det,
-                require_clean_noise=args.require_clean_noise,
-                max_mean_whitened_power=args.max_mean_whitened_power,
-            )
+            try:
+                prep_index(
+                    args.index,
+                    detectors,
+                    glitch_det,
+                    (args.flow, args.fmax),
+                    args.snr_grid,
+                    args.noise_offset,
+                    args.outdir,
+                    blip_ifo=args.blip_ifo,
+                    classes=prep_classes,
+                    campaign_id=campaign_id,
+                    snr_reference_det=snr_reference_det,
+                    require_clean_noise=args.require_clean_noise,
+                    max_mean_whitened_power=args.max_mean_whitened_power,
+                )
+            except StrainFetchFailed as exc:
+                rejected = _record_unavailable_trigger(
+                    index=args.index,
+                    outdir=args.outdir,
+                    campaign_id=campaign_id,
+                    detectors=detectors,
+                    blip_ifo=args.blip_ifo,
+                    error=exc,
+                )
+                _log(
+                    args.index,
+                    f"REJECTED: strain acquisition failed -> {rejected}",
+                )
+                # Keep the task failed so aftercorr-dependent analyses do not
+                # run against a missing manifest.  Future submission scans see
+                # rejected.json and do not requeue this trigger.
+                raise
             _log(args.index, f"prep done -> {manifest_path}")
     if args.stage in ("analysis", "both"):
         if not manifest_path.exists():

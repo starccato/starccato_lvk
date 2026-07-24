@@ -21,6 +21,62 @@ import collect_results  # noqa: E402
 from real_noise_io import inject_into_bundle  # noqa: E402
 
 
+def test_confirmed_missing_remote_data_is_distinguished_from_network_failure():
+    missing = FileNotFoundError("no archive file")
+    assert campaign.StrainDataUnavailable.__name__ == "StrainDataUnavailable"
+    from starccato_lvk.acquisition.io.strain_loader import (
+        _is_confirmed_missing_data,
+    )
+
+    assert _is_confirmed_missing_data(ExceptionGroup("gwpy", [missing]))
+    assert not _is_confirmed_missing_data(ConnectionError("DNS unavailable"))
+    assert issubclass(
+        campaign.StrainDataUnavailable, campaign.StrainFetchFailed
+    )
+
+
+def test_unavailable_trigger_is_recorded_and_excluded_from_collection(
+    tmp_path, monkeypatch
+):
+    rejected = campaign._record_unavailable_trigger(
+        index=2,
+        outdir=tmp_path,
+        campaign_id="campaign-test",
+        detectors=["L1"],
+        blip_ifo="L1",
+        error=campaign.StrainDataUnavailable("No GWOSC strain data"),
+    )
+    assert rejected.exists()
+    results_dir = tmp_path / "results"
+    results_dir.mkdir()
+    for event_class in campaign.PRODUCTION_CLASSES:
+        (results_dir / f"e0_{event_class}.json").write_text(
+            json.dumps(
+                {
+                    "campaign_id": "campaign-test",
+                    "index": 0,
+                    "cls": event_class,
+                }
+            )
+        )
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "collect_results.py",
+            str(tmp_path),
+            "--expected-start",
+            "0",
+            "--expected-stop",
+            "2",
+        ],
+    )
+    collect_results.main()
+    summary = json.loads((tmp_path / "collection_summary.json").read_text())
+    assert {row["index"] for row in summary["missing"]} == {1}
+    assert summary["rejected_triggers"][0]["index"] == 2
+
+
 def test_manifest_fingerprint_detects_changes():
     manifest = {
         "schema_version": campaign.MANIFEST_SCHEMA_VERSION,

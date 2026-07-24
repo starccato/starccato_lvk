@@ -28,13 +28,6 @@ from starccato_jax.waveforms import MODELS
 
 from .analysis.main import run_starccato_analysis, run_bcr_posteriors
 from .acquisition.main import cli_collect_lvk_data, cli_get_analysis_data
-from .workflows import load_analysis_config, run_event_workflow
-from .workflows.run_event import (
-    CONFIG_DEFAULT,
-    EVENTS_DIR_DEFAULT,
-    prepare_event_lists_from_files,
-    read_event_list,
-)
 
 
 @click.group()
@@ -112,119 +105,6 @@ def acquire_batch(num_samples, outdir):
     cli_collect_lvk_data(num_samples, outdir)
 
     click.echo(f"Batch acquisition complete for {num_samples} samples")
-
-
-@cli.group(name="events")
-def events_group():
-    """Event list management and batch-analysis helpers."""
-    pass
-
-
-@events_group.command("generate")
-@click.option(
-    "--outdir",
-    type=click.Path(file_okay=False, dir_okay=True),
-    default=str(EVENTS_DIR_DEFAULT),
-    show_default=True,
-    help="Directory to write scenario event lists.",
-)
-@click.option(
-    "--blip-count",
-    type=int,
-    default=200,
-    show_default=True,
-    help="Number of blip glitch GPS times to include.",
-)
-@click.option(
-    "--noise-file",
-    type=click.Path(exists=True, dir_okay=False),
-    required=True,
-    help="Text file containing noise GPS times (one per line).",
-)
-@click.option(
-    "--noise-inj-file",
-    type=click.Path(exists=True, dir_okay=False),
-    default=None,
-    help="Optional text file of noise+injection GPS times (defaults to noise file).",
-)
-def events_generate(outdir, blip_count, noise_file, noise_inj_file):
-    """Generate scenario GPS lists used by SLURM workflows."""
-    try:
-        prepare_event_lists_from_files(
-            Path(outdir),
-            blip_count=blip_count,
-            noise_file=Path(noise_file),
-            noise_inj_file=Path(noise_inj_file) if noise_inj_file else None,
-        )
-    except ValueError as exc:
-        raise click.ClickException(str(exc)) from exc
-    click.echo(f"Wrote event lists to {outdir}")
-
-
-@events_group.command("run")
-@click.option(
-    "--scenario",
-    type=click.Choice(["blip", "noise", "noise_inj"]),
-    required=True,
-)
-@click.option(
-    "--index",
-    type=int,
-    required=True,
-    help="Event index (e.g. SLURM_ARRAY_TASK_ID).",
-)
-@click.option(
-    "--config",
-    type=click.Path(exists=True, dir_okay=False),
-    default=str(CONFIG_DEFAULT),
-    show_default=True,
-    help="Analysis configuration YAML.",
-)
-@click.option(
-    "--events-dir",
-    type=click.Path(file_okay=False, dir_okay=True),
-    default=str(EVENTS_DIR_DEFAULT),
-    show_default=True,
-    help="Directory containing events_<scenario>.txt files.",
-)
-@click.option(
-    "--force", is_flag=True, help="Re-run analysis even if summary exists."
-)
-@click.option(
-    "--distance",
-    type=float,
-    default=1.0,
-    show_default=True,
-    help="Injection distance scale for noise_inj scenario.",
-)
-@click.option(
-    "--stage",
-    type=click.Choice(["prep", "analysis", "both"]),
-    default="both",
-    show_default=True,
-    help="Which workflow stage to execute.",
-)
-def events_run(scenario, index, config, events_dir, force, distance, stage):
-    """Run the high-level event workflow for a single GPS trigger."""
-    cfg = load_analysis_config(Path(config))
-    gps = read_event_list(scenario, index, root=Path(events_dir))
-    result = run_event_workflow(
-        cfg,
-        scenario,
-        gps,
-        index,
-        force=force,
-        injection_distance=distance,
-        stage=stage,
-    )
-    if result is None:
-        click.echo(
-            "Workflow completed with no new analysis (results already present)."
-        )
-    else:
-        click.echo(
-            f"Analysis complete for {scenario} @ {gps}. BCR={result.get('bcr')}"
-        )
 
 
 @cli.command(name="run")

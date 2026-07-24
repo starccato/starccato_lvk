@@ -146,9 +146,15 @@ for spec in "${COHORT_LIST[@]}"; do
   label="[${dettag} blip=${blip}]"
 
   prep_missing=()
+  rejected=()
   for ((i = 0; i < n; i++)); do
-    [[ -f ${outdir}/e${i}/manifest.json ]] || prep_missing+=("${i}")
+    if [[ -f ${outdir}/e${i}/rejected.json ]]; then
+      rejected+=("${i}")
+    elif [[ ! -f ${outdir}/e${i}/manifest.json ]]; then
+      prep_missing+=("${i}")
+    fi
   done
+  (( ${#rejected[@]} )) && echo "${label} excluded: ${#rejected[@]} trigger(s) flagged during strain acquisition"
   if (( ${#prep_missing[@]} > BUDGET )); then
     echo "${label} prep: ${#prep_missing[@]} tasks exceed remaining budget (${BUDGET}) — deferred with its analyses"
     DEFERRED=1

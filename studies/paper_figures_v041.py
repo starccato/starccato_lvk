@@ -237,7 +237,14 @@ def fig_confusion(df: pd.DataFrame, out: Path) -> dict:
 def fig_roc(df: pd.DataFrame, out: Path) -> dict:
     """Signal vs combined background, ranking by ln O and reweighted SNR."""
     fig, axes = plt.subplots(1, 2, figsize=(6.8, 2.9), sharey=True)
-    fap = np.logspace(-4, 0, 200)
+    # Start the axis at the smallest false-alarm probability the background can
+    # actually resolve (1/N_bkg). Extending it further left plots pure
+    # extrapolation: below the floor the empirical ROC has no support, and the
+    # bootstrap band there reflects resampling of a single extreme event rather
+    # than any measured efficiency.
+    n_bkg = int((df[df.group == GROUPS[0]]["class"] != "inj_ccsn").sum())
+    fap_floor = 1.0 / n_bkg
+    fap = np.logspace(np.log10(fap_floor), 0, 200)
     summary = {}
     for ax, grp in zip(axes, GROUPS):
         sub = df[df.group == grp]
@@ -257,17 +264,31 @@ def fig_roc(df: pd.DataFrame, out: Path) -> dict:
                 bkg_rows["event"].to_numpy(),
                 fap,
             )
-            ax.fill_between(fap, lo, hi, color=COLOR[score], alpha=0.2, lw=0)
+            eps = 1.0e-3  # keep a perfect-recovery point on a log axis
+            ax.fill_between(
+                fap, np.maximum(1 - lo, eps), np.maximum(1 - hi, eps),
+                color=COLOR[score], alpha=0.2, lw=0,
+            )
             ax.plot(
                 fap,
-                med,
+                np.maximum(1 - med, eps),
                 color=COLOR[score],
                 lw=1.4,
                 label=f"{label}  AUC $={a:.3f}\\pm{err:.3f}$",
             )
         ax.set_xscale("log")
         ax.set_xlim(fap[0], 1)
-        ax.set_ylim(0, 1.02)
+        # The odds curve saturates near unity over most of the range, so a
+        # linear efficiency axis compresses every difference that matters into
+        # the top few percent. A log MISS-rate axis (1 - efficiency) resolves
+        # them; ticks are still labelled as efficiency.
+        ax.set_yscale("log")
+        ax.set_ylim(2.0e-3, 1.0)
+        ax.invert_yaxis()
+        ticks = [1e-2, 3e-2, 1e-1, 3e-1, 1.0]
+        ax.set_yticks(ticks)
+        ax.set_yticklabels([f"{1 - t:.2f}" if t < 1 else "0.00" for t in ticks])
+        ax.axvline(fap_floor, color="0.6", lw=0.8, ls=":", zorder=0)
         ax.set_xlabel("False-alarm probability")
         ax.set_title(grp)
         # the reweighted-SNR curve climbs through the lower right, so the
@@ -279,7 +300,7 @@ def fig_roc(df: pd.DataFrame, out: Path) -> dict:
             edgecolor="none",
             framealpha=0.9,
         )
-    axes[0].set_ylabel("Detection efficiency")
+    axes[0].set_ylabel("Detection efficiency")  # tick labels are efficiency; axis is log miss rate
     fig.tight_layout()
     fig.savefig(out / "fig_roc.pdf")
     plt.close(fig)

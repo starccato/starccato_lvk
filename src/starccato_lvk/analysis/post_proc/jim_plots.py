@@ -118,6 +118,8 @@ def plot_posterior_predictive_from_samples(
         return
 
     outpath.parent.mkdir(parents=True, exist_ok=True)
+    npz_path = outpath.with_suffix(".npz")
+    npz_data: Dict[str, np.ndarray] = {}
 
     latent_names = list(latent_names)
     sample_count = len(samples[latent_names[0]]) if latent_names else len(samples.get("log_amp", []))
@@ -182,6 +184,12 @@ def plot_posterior_predictive_from_samples(
         upper = np.percentile(sample_td_w, ci[1], axis=0)
         median = np.percentile(sample_td_w, 50, axis=0)
 
+        npz_data[f"{det.name}_time"] = time_array
+        npz_data[f"{det.name}_whitened_data"] = data_td_w
+        npz_data[f"{det.name}_whitened_median"] = median
+        npz_data[f"{det.name}_whitened_lower"] = lower
+        npz_data[f"{det.name}_whitened_upper"] = upper
+
         ax_time = axes[row, 0]
         ax_time.plot(time_array, data_td_w, color="tab:gray", lw=0.8, label=f"{det.name} data")
         ax_time.plot(time_array, median, color="tab:orange", lw=1.2, label="Posterior median")
@@ -201,6 +209,12 @@ def plot_posterior_predictive_from_samples(
         median_psd = np.percentile(sample_psd, 50, axis=0)
         lower_psd = np.percentile(sample_psd, ci[0], axis=0)
         upper_psd = np.percentile(sample_psd, ci[1], axis=0)
+
+        npz_data[f"{det.name}_freq"] = freqs_full[mask]
+        npz_data[f"{det.name}_data_psd"] = data_psd[mask]
+        npz_data[f"{det.name}_median_psd"] = median_psd[mask]
+        npz_data[f"{det.name}_lower_psd"] = lower_psd[mask]
+        npz_data[f"{det.name}_upper_psd"] = upper_psd[mask]
 
         ax_psd = axes[row, 1]
         finite_mask = (median_psd > 0) & np.isfinite(median_psd)
@@ -225,3 +239,5 @@ def plot_posterior_predictive_from_samples(
     fig.tight_layout()
     fig.savefig(outpath, dpi=150)
     plt.close(fig)
+
+    np.savez(npz_path, ci_low=ci[0], ci_high=ci[1], **npz_data)
