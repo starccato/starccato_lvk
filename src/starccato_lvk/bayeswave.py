@@ -200,6 +200,14 @@ def detector_inputs(
             )
 
         frame_start = math.floor(t0)
+        # Snap t0 onto the output sample grid. gwpy/lalframe derive the GWF
+        # frame epoch and the resampled series start from t0 with slightly
+        # different nanosecond rounding, so an unsnapped sub-sample t0 makes the
+        # series appear to begin a few ns before its frame and lalframe rejects
+        # the write. trigtime, segment-start and psdstart all derive from this
+        # same t0, so snapping here (shift < half a sample) keeps the whole
+        # analysis window self-consistent.
+        t0 = frame_start + round((t0 - frame_start) * sample_rate) / sample_rate
         frame_end = math.ceil(t0 + duration)
         frame_duration = frame_end - frame_start
         tag = f"STARCCATO_E{index}_{event_class.upper()}_SR{int(sample_rate)}"
