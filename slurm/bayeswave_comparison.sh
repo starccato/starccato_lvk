@@ -218,4 +218,25 @@ print(f"  {sys.argv[2]:9s} lnBF={d['log_bayeswave_signal_glitch']:+7.2f} "
 PY
   done
 fi
+
+# --- Stage 4: prune scratch on SUCCESS only
+# These campaigns are inode- and space-hungry (a 1M-file project quota is easy
+# to exhaust, and a crashed run can leave a >1GB core dump), which stalls the
+# whole campaign: a job that cannot create its output file is killed at startup
+# with RaisedSignal:53. Once result.json exists, the evidences and the posterior
+# products under post/ are the science; the sampler scratch is not needed.
+# Guarded on result.json so a FAILED run keeps everything for debugging and
+# keeps its checkpoint/ so a resubmit can still resume.
+if [[ "${KEEP_SCRATCH:-0}" != "1" ]]; then
+  for bw in "${BW_FIXED}" "${BW_FREE}"; do
+    [[ -f "${bw}/result.json" ]] || continue   # only prune a completed run
+    rm -f  "${bw}"/core.*                      # crash dumps (~1GB each)
+    rm -rf "${bw}/checkpoint"                  # resume state; run is finished
+    rm -rf "${bw}/chains"                      # raw MCMC chains
+    rm -f  "${bw}"/*_PSD.dat "${bw}"/*_psd.dat "${bw}"/*_asd.dat
+    rm -f  "${bw}"/*_priorpsd.dat "${bw}"/*_fairdraw_res.dat
+    rm -rf "${bw}/frames"                      # regenerable from the manifest
+    echo "[e${INDEX}] pruned scratch in ${bw} (kept result.json, *_evidence.dat, post/, waveforms/)"
+  done
+fi
 echo "[e${INDEX}] done"
