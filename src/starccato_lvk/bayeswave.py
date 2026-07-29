@@ -207,7 +207,16 @@ def detector_inputs(
         # the write. trigtime, segment-start and psdstart all derive from this
         # same t0, so snapping here (shift < half a sample) keeps the whole
         # analysis window self-consistent.
-        t0 = frame_start + round((t0 - frame_start) * sample_rate) / sample_rate
+        # ...and keep the offset a whole number of nanoseconds. A GWF epoch is
+        # stored as integer sec+ns, but most 1/2048s sample offsets are not
+        # whole ns (1670/2048 = 0.8154296875s), so gwpy rounds the frame epoch
+        # UP and the series then starts a fraction of a ns BEFORE its own frame,
+        # which lalframe rejects. Doing this on the sub-second offset (not the
+        # full GPS value) keeps the arithmetic exact: at GPS magnitudes float64
+        # resolution is ~2e-7s, far coarser than a nanosecond.
+        offset_ns = math.ceil((t0 - frame_start) * sample_rate) / sample_rate
+        offset_ns = math.ceil(offset_ns * 1e9) / 1e9
+        t0 = frame_start + offset_ns
         frame_end = math.ceil(t0 + duration)
         frame_duration = frame_end - frame_start
         tag = f"STARCCATO_E{index}_{event_class.upper()}_SR{int(sample_rate)}"
