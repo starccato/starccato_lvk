@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -63,10 +64,29 @@ def _get(d: dict, *path, default=NAN):
     return cur if cur is not None else default
 
 
+def _replace(group: h5py.Group, name: str, **kwargs) -> None:
+    """Create a dataset, replacing any existing one of the same name."""
+    if name in group:
+        del group[name]
+    group.create_dataset(name, compression="gzip", compression_opts=4, **kwargs)
+
+
+def _add_if_absent(group: h5py.Group, name: str, data) -> bool:
+    """Create a dataset only if absent; never clobber an archived one.
+
+    Posterior products are pruned from disk once archived, so a rebuild must
+    carry forward what it can no longer re-read. Overwriting here previously
+    destroyed the draws for 846 already-pruned events.
+    """
+    if name in group:
+        return False
+    group.create_dataset(name, data=data, compression="gzip", compression_opts=4)
+    return True
+
+
 def _write_vlen_json(group: h5py.Group, name: str, raw_jsons: list[str]) -> None:
     dt = h5py.string_dtype(encoding="utf-8")
-    group.create_dataset(name, data=np.array(raw_jsons, dtype=object), dtype=dt,
-                          compression="gzip", compression_opts=4)
+    _replace(group, name, data=np.array(raw_jsons, dtype=object), dtype=dt)
 
 
 def _write_cols(group: h5py.Group, cols: dict[str, list]) -> None:
@@ -74,10 +94,9 @@ def _write_cols(group: h5py.Group, cols: dict[str, list]) -> None:
         arr = np.asarray(values)
         if arr.dtype.kind in ("U", "S", "O"):
             dt = h5py.string_dtype(encoding="utf-8")
-            group.create_dataset(key, data=np.array(values, dtype=object), dtype=dt,
-                                  compression="gzip", compression_opts=4)
+            _replace(group, key, data=np.array(values, dtype=object), dtype=dt)
         else:
-            group.create_dataset(key, data=arr, compression="gzip", compression_opts=4)
+            _replace(group, key, data=arr)
 
 
 # --------------------------------------------------------------------------
@@ -271,16 +290,10 @@ def collect_bayeswave(results_root: Path, campaign: str, cls: str, h5f: h5py.Fil
             for ifo in ("H1", "L1"):
                 draws = _load_dat(post_signal / f"signal_recovered_whitened_waveform_{ifo}.dat")
                 if draws is not None:
-                    ev_grp.create_dataset(
-                        f"whitened_waveform_draws_{ifo}", data=draws,
-                        compression="gzip", compression_opts=4,
-                    )
+                    _add_if_absent(ev_grp, f"whitened_waveform_draws_{ifo}", draws)
                 data = _load_dat(post_root / f"whitened_data_{ifo}.dat")
                 if data is not None:
-                    ev_grp.create_dataset(
-                        f"whitened_data_{ifo}", data=data,
-                        compression="gzip", compression_opts=4,
-                    )
+                    _add_if_absent(ev_grp, f"whitened_data_{ifo}", data)
                 # The median signal-model PSD is not kept for its own sake: it is
                 # what studies/plot_waveform_reconstruction.py whitens OUR VAE
                 # waveform with, so the morphology overlay compares like with
@@ -288,23 +301,16 @@ def collect_bayeswave(results_root: Path, campaign: str, cls: str, h5f: h5py.Fil
                 # post/ directories afterwards.
                 psd = _load_dat(post_signal / f"signal_median_PSD_{ifo}.dat")
                 if psd is not None:
-                    ev_grp.create_dataset(
-                        f"signal_median_psd_{ifo}", data=psd,
-                        compression="gzip", compression_opts=4,
-                    )
+                    _add_if_absent(ev_grp, f"signal_median_psd_{ifo}", psd)
                 # Median reconstruction: recoverable from the draws, but cheap
                 # and it is what most summary figures actually plot.
                 med = _load_dat(post_signal / f"signal_median_time_domain_waveform_{ifo}.dat")
                 if med is not None:
-                    ev_grp.create_dataset(
-                        f"median_time_domain_waveform_{ifo}", data=med,
-                        compression="gzip", compression_opts=4,
-                    )
+                    _add_if_absent(ev_grp, f"median_time_domain_waveform_{ifo}", med)
             for axis in ("timesamp", "freqsamp"):
                 arr = _load_dat(post_root / f"{axis}.dat")
                 if arr is not None:
-                    ev_grp.create_dataset(axis, data=arr,
-                                          compression="gzip", compression_opts=4)
+                    _add_if_absent(ev_grp, axis, arr)
     return len(rows)
 
 
@@ -322,8 +328,12 @@ def main() -> int:
     repo = Path(__file__).resolve().parents[1]
     args.out.parent.mkdir(parents=True, exist_ok=True)
     tmp_out = args.out.with_suffix(".h5.tmp")
-
-    with h5py.File(tmp_out, "w") as h5f:
+    # Start from the existing archive when there is one: posterior products are
+    # deleted from disk once archived, so a from-scratch rebuild would silently
+    # drop them. Columnar tables are still refreshed from result.json below.
+    if args.out.is_file():
+        shutil.copy2(args.out, tmp_out)
+    with h5py.File(tmp_out, "a") as h5f:
         h5f.attrs["created_utc"] = datetime.now(timezone.utc).isoformat()
         h5f.attrs["git_commit"] = _git_commit(repo)
         h5f.attrs["results_root"] = str(args.results_root)
