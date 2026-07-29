@@ -10,9 +10,11 @@ queryable HDF5 file with:
                                      schema from the morphZ evidence results)
   /bayeswave/<campaign>/<class>/    columnar evidence arrays + raw_json
   /bayeswave/<campaign>/<class>/posteriors/e<index>/
-                                     posterior waveform draws + whitened data
-                                     (PSDs are not kept -- regenerable from
-                                     the manifest/frames if ever needed)
+                                     posterior waveform draws, whitened data,
+                                     median reconstruction, time/frequency axes
+                                     and the median signal-model PSD (kept only
+                                     because plot_waveform_reconstruction.py
+                                     whitens our VAE waveform through it)
 
 Every row-oriented group also gets a ``raw_json`` variable-length-string
 dataset holding the untouched source JSON, so nothing is lost even though
