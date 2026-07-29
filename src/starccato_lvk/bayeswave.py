@@ -28,6 +28,11 @@ import numpy as np
 EVENT_CLASSES = ("noise", "inj_ccsn", "inj_glitch", "real_glitch")
 
 
+def _frame_span(t0: float, duration: float) -> tuple[int, int]:
+    """Integer-second [start, end) the GWF file covers, per LIGO convention."""
+    return math.floor(t0), math.ceil(t0 + duration)
+
+
 @dataclass(frozen=True)
 class DetectorInput:
     """Frame/cache information for one detector."""
@@ -199,25 +204,7 @@ def detector_inputs(
                 "choose a compatible sample rate"
             )
 
-        frame_start = math.floor(t0)
-        # Snap t0 onto the output sample grid. gwpy/lalframe derive the GWF
-        # frame epoch and the resampled series start from t0 with slightly
-        # different nanosecond rounding, so an unsnapped sub-sample t0 makes the
-        # series appear to begin a few ns before its frame and lalframe rejects
-        # the write. trigtime, segment-start and psdstart all derive from this
-        # same t0, so snapping here (shift < half a sample) keeps the whole
-        # analysis window self-consistent.
-        # ...and keep the offset a whole number of nanoseconds. A GWF epoch is
-        # stored as integer sec+ns, but most 1/2048s sample offsets are not
-        # whole ns (1670/2048 = 0.8154296875s), so gwpy rounds the frame epoch
-        # UP and the series then starts a fraction of a ns BEFORE its own frame,
-        # which lalframe rejects. Doing this on the sub-second offset (not the
-        # full GPS value) keeps the arithmetic exact: at GPS magnitudes float64
-        # resolution is ~2e-7s, far coarser than a nanosecond.
-        offset_ns = math.ceil((t0 - frame_start) * sample_rate) / sample_rate
-        offset_ns = math.ceil(offset_ns * 1e9) / 1e9
-        t0 = frame_start + offset_ns
-        frame_end = math.ceil(t0 + duration)
+        frame_start, frame_end = _frame_span(t0, duration)
         frame_duration = frame_end - frame_start
         tag = f"STARCCATO_E{index}_{event_class.upper()}_SR{int(sample_rate)}"
         frame = (
@@ -273,7 +260,22 @@ def prepare_frames(
             if series.size != item.samples:
                 sizes = f"{series.size} samples, expected {item.samples}"
                 raise ValueError(f"resampled frame has {sizes}")
-            series.write(item.frame, format="gwf")
+            # Pin the GWF frame span explicitly. Left to itself gwpy takes the
+            # frame epoch from the series *span* -- a float that it converts via
+            # its decimal repr ("...434.8154297" -> 815429700ns) -- while the
+            # data series carries an epoch converted from the exact binary value
+            # (815429688ns). Whenever repr rounds up, the series starts ~12ns
+            # before its own frame and lalframe refuses the write; that hit 54%
+            # of events (only t0 values whose repr is exact, e.g. .609375, got
+            # through). Integer-second bounds are exact under both conversions,
+            # and they match the span this frame's filename already advertises.
+            frame_start, frame_end = _frame_span(item.t0, item.duration)
+            series.write(
+                item.frame,
+                format="gwf",
+                start=frame_start,
+                end=frame_end,
+            )
 
         cache_start = math.floor(item.t0)
         cache_end = math.ceil(item.t0 + item.duration)
