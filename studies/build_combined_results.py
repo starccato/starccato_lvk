@@ -239,6 +239,30 @@ def collect_bayeswave(results_root: Path, campaign: str, cls: str, h5f: h5py.Fil
                         f"whitened_data_{ifo}", data=data,
                         compression="gzip", compression_opts=4,
                     )
+                # The median signal-model PSD is not kept for its own sake: it is
+                # what studies/plot_waveform_reconstruction.py whitens OUR VAE
+                # waveform with, so the morphology overlay compares like with
+                # like. Archiving it here is what makes it safe to delete the
+                # post/ directories afterwards.
+                psd = _load_dat(post_signal / f"signal_median_PSD_{ifo}.dat")
+                if psd is not None:
+                    ev_grp.create_dataset(
+                        f"signal_median_psd_{ifo}", data=psd,
+                        compression="gzip", compression_opts=4,
+                    )
+                # Median reconstruction: recoverable from the draws, but cheap
+                # and it is what most summary figures actually plot.
+                med = _load_dat(post_signal / f"signal_median_time_domain_waveform_{ifo}.dat")
+                if med is not None:
+                    ev_grp.create_dataset(
+                        f"median_time_domain_waveform_{ifo}", data=med,
+                        compression="gzip", compression_opts=4,
+                    )
+            for axis in ("timesamp", "freqsamp"):
+                arr = _load_dat(post_root / f"{axis}.dat")
+                if arr is not None:
+                    ev_grp.create_dataset(axis, data=arr,
+                                          compression="gzip", compression_opts=4)
     return len(rows)
 
 
@@ -268,7 +292,8 @@ def main() -> int:
             "/lno_baseline/<cohort>/<class>/{index,mf_snr,new_snr,...}; "
             "/bayeswave/<campaign>/<class>/{index,logZ_*,log_bayeswave_signal_glitch,...,raw_json}; "
             "/bayeswave/<campaign>/<class>/posteriors/e<index>/"
-            "{whitened_waveform_draws_H1,whitened_waveform_draws_L1,whitened_data_H1,whitened_data_L1}"
+            "{whitened_waveform_draws_*,whitened_data_*,signal_median_psd_*,"
+            "median_time_domain_waveform_*,timesamp,freqsamp}"
         )
 
         n_lno = collect_lno(args.results_root, args.lno_campaign, h5f)
