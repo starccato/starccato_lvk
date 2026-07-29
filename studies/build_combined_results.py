@@ -159,10 +159,36 @@ def collect_lno(results_root: Path, campaign: str, h5f: h5py.File) -> int:
 # --------------------------------------------------------------------------
 
 def _load_dat(path: Path) -> np.ndarray | None:
+    """Load a BayesWave .dat table, salvaging truncated files.
+
+    Runs killed mid-write (the inode quota filling up, a scancel during
+    post-processing) leave a final short row, and ``loadtxt`` then rejects the
+    whole file -- discarding the complete posterior draws that precede it. Keep
+    every whole row instead: 26 valid draws are worth far more than none.
+    """
     if not path.is_file():
         return None
     try:
         return np.loadtxt(path, dtype=np.float32)
+    except ValueError:
+        rows: list[list[str]] = []
+        ncol: int | None = None
+        with path.open() as fh:
+            for line in fh:
+                parts = line.split()
+                if not parts:
+                    continue
+                if ncol is None:
+                    ncol = len(parts)
+                if len(parts) != ncol:
+                    break  # truncated tail; everything before it is intact
+                rows.append(parts)
+        if not rows:
+            return None
+        try:
+            return np.asarray(rows, dtype=np.float32)
+        except ValueError:
+            return None
     except Exception:
         return None
 
