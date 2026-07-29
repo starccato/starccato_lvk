@@ -242,6 +242,20 @@ def collect_bayeswave(results_root: Path, campaign: str, cls: str, h5f: h5py.Fil
             float(_get(r, "signal_reconstructed_snr_per_detector", "L1")) for r in rows
         ],
         "elapsed_seconds": [float(_get(r, "elapsed_seconds")) for r in rows],
+        # Provenance. A "recovered" row finished sampling but was rejected by the
+        # evidence check, so its numbers come from bayeswave.log or from an
+        # evidence.dat whose uncertainty underflowed; it has no posterior draws.
+        # Filter on these before using a row as though it were a full run.
+        "recovered": [int(bool(_get(r, "recovered", default=False))) for r in rows],
+        "degenerate_uncertainty": [
+            int(bool(_get(r, "degenerate_uncertainty", default=False))) for r in rows
+        ],
+        "posteriors_available": [
+            int(bool(_get(r, "posteriors_available", default=True))) for r in rows
+        ],
+        "evidence_source": [
+            str(_get(r, "evidence_source", default="bayeswave_post")) for r in rows
+        ],
     }
     _write_cols(grp, cols)
     _write_vlen_json(grp, "raw_json", raw_jsons)
