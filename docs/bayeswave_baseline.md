@@ -1,12 +1,18 @@
 # BayesWave baseline for the real-noise population
 
-This workflow evaluates BayesWave's signal-versus-glitch log Bayes factor on
-the exact H1-L1 events prepared by `studies/real_noise_event.py`.  The primary
-comparison statistic is
+This workflow evaluates BayesWave on the exact H1-L1 events prepared by
+`studies/real_noise_event.py`.  Two statistics are recorded per run:
 
 ```text
-log_bayeswave_signal_glitch = logZ_signal - logZ_glitch
+log_bayeswave_signal_glitch          = logZ_signal - logZ_glitch          # native
+log_bayeswave_signal_glitch_or_noise = logZ_signal - ln[b Z_glitch + (1-b) Z_noise]
 ```
+
+The native factor is BayesWave's own published quantity.  The second is aligned
+with the hypothesis the VAE log odds tests (same alpha, beta), and is the one to
+use when comparing the two pipelines -- see
+`docs/bayeswave_vae_fair_comparison.md`, which also explains why sign agreement
+at zero is not a valid comparison between them.
 
 The recovered signal SNR is saved as a diagnostic, not used as the primary
 ranking statistic.
