@@ -1,26 +1,23 @@
 #!/bin/bash
-# Controlled BayesWave convergence pilot: the 40-event stratified cohort from
-# studies/select_bw_pilot_events.py, each re-run at 4e6 iterations under three
-# independent seeds.
+# Controlled BayesWave trust check: a pre-registered, class-balanced 24-event
+# cohort from studies/select_bw_pilot_events.py, each run under three independent
+# seeds with the matched 64 s off-source PSD window.
 #
-# The question this answers: are the production (1e6-iteration) BayesWave scores
-# converged? If the three seeds agree to within BayesWave's own reported evidence
-# uncertainty AND land where the 1e6 run did, the disagreements with the VAE are
-# real. If they scatter or move systematically, the production settings were
-# inadequate and the whole matched cohort must be re-run.
+# The question this answers is deliberately sign-level: do the three seeds agree
+# on whether BayesWave favors the class-expected hypothesis? Reported evidence
+# uncertainties are recorded, but they do not select events or decide acceptance.
 #
-# Nothing else changes between the production runs and this one: same manifests,
-# same 300-800 Hz wavelet band and 2048 Hz detector band from the manifest, same
-# fixed sky as the VAE analysis. Only iterations, burn-in, and seed differ, so a
-# shift can only be attributed to convergence.
+# The two methods use the same strain, trigger, 300-800 Hz wavelet band, fixed sky,
+# and 64 s off-source PSD stretch stored in each manifest's analysis bundles.
 #
 # Prerequisite (writes pilot_tasks.txt next to pilot_cohort.json):
 #   python studies/select_bw_pilot_events.py \
-#     --paired ${RESULTS_ROOT}/paired_lno_vs_bayeswave.csv \
-#     --out ${RESULTS_ROOT}/bw_seed_pilot/pilot_cohort.json
+#     --ccsn-manifests ${RESULTS_ROOT}/${CCSN_CAMPAIGN}/data/rn_H1_L1 \
+#     --glitch-manifests ${RESULTS_ROOT}/${GLITCH_CAMPAIGN}/data/rn_H1_L1 \
+#     --out ${PILOT_ROOT}/pilot_cohort.json
 #
 # Submit the whole cohort (one array task per event x seed):
-#   sbatch --array=0-119%40 slurm/bayeswave_seed_pilot.sh
+#   sbatch --array=0-71%24 slurm/bayeswave_seed_pilot.sh
 #
 # Optional overrides:
 #   RESULTS_ROOT, PILOT_ROOT, TASK_FILE, CCSN_CAMPAIGN, GLITCH_CAMPAIGN
@@ -28,13 +25,13 @@
 
 #SBATCH --job-name=starccato_bwseed
 #SBATCH --account=oz303
-#SBATCH --array=0-119%40
+#SBATCH --array=0-71%24
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=4G
-# 1e6 iterations took ~1 h wall on this cohort, so 4e6 needs ~4-5 h. The request
-# is generous rather than tight because BayesWave checkpoints hourly: a job that
-# hits the wall is resumed by resubmitting the same array, but a job that fits
-# first time saves a whole round trip.
+# 1e6 iterations took ~1 h wall on the earlier cohort, so 4e6 needs ~4-5 h.
+# The request is generous because BayesWave checkpoints hourly: a job that hits
+# the wall is resumed by resubmitting the same array, but a job that fits first
+# time saves a whole round trip.
 #SBATCH --time=12:00:00
 #SBATCH --output=slurm/logs/bwseed_%A_%a.out
 #SBATCH --error=slurm/logs/bwseed_%A_%a.err
@@ -46,8 +43,8 @@ TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 
 RESULTS_ROOT=${RESULTS_ROOT:-/fred/oz303/avajpeyi/results/starccato_lvk}
 # Inputs (manifests, bundles) are read from RESULTS_ROOT on oz303, but the pilot
-# WRITES to oz980. A BayesWave run holds ~600 files while sampling, so 120 runs
-# at 40-way concurrency need ~25k inodes of headroom, and oz303 sits at 97% of
+# WRITES to oz980. A BayesWave run holds ~600 files while sampling, so 72 runs
+# at 24-way concurrency need ~15k inodes of headroom, and oz303 sits at 97% of
 # its 1M-file group quota. Exhausting it does not just fail this job: every job
 # in the group that cannot create its output file is killed at startup with
 # RaisedSignal:53. Point PILOT_ROOT back at oz303 only after checking

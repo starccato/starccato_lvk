@@ -20,22 +20,38 @@ from starccato_lvk.bayeswave import (
 )
 
 
-def _write_bundle(path: Path, *, t0=1_260_000_000.0, dt=1 / 4096, n=16384):
+def _write_bundle(
+    path: Path, *, t0=1_260_000_000.0, dt=1 / 4096, n=16384, offsource=True
+):
+    """Write a bundle laid out as the campaign writes them.
+
+    ``full_strain`` holds the off-source PSD stretch followed by the analysis
+    segment: 64 s of PSD data, a 0.5 s gap, then the 4 s segment. Pass
+    ``offsource=False`` for a legacy bundle with the analysis segment only.
+    """
     path.parent.mkdir(parents=True, exist_ok=True)
+    lead = 64.5
     with h5py.File(path, "w") as h5:
         strain = h5.create_group("strain")
         strain.create_dataset("values", data=np.zeros(n))
         strain.attrs["t0"] = t0
         strain.attrs["dt"] = dt
+        if offsource:
+            full = h5.create_group("full_strain")
+            full.create_dataset(
+                "values", data=np.zeros(n + int(round(lead / dt)))
+            )
+            full.attrs["t0"] = t0 - lead
+            full.attrs["dt"] = dt
 
 
-def _write_manifest(tmp_path: Path, *, detectors=("H1", "L1")) -> Path:
+def _write_manifest(tmp_path: Path, *, detectors=("H1", "L1"), offsource=True) -> Path:
     bundles = {}
     for event_class in ("noise", "inj_ccsn", "inj_glitch", "real_glitch"):
         bundles[event_class] = {}
         for ifo in detectors:
             bundle = tmp_path / event_class / f"{ifo}.hdf5"
-            _write_bundle(bundle)
+            _write_bundle(bundle, offsource=offsource)
             bundles[event_class][ifo] = str(bundle)
     manifest = {
         "index": 7,
@@ -161,16 +177,76 @@ def test_prepare_frames_downsamples_to_power_of_two(tmp_path):
 
     manifest_path = _write_manifest(tmp_path)
     manifest = load_event_manifest(manifest_path)
+    for bundle in manifest["bundles"]["inj_ccsn"].values():
+        with h5py.File(bundle, "r+") as h5:
+            h5["strain/values"][:] = 1.0
     inputs = detector_inputs(
         manifest, manifest_path, "inj_ccsn", tmp_path / "out"
     )
     prepare_frames(inputs)
 
     for item in inputs:
-        frame = TimeSeries.read(item.frame, channel=item.channel)
-        assert frame.size == 8192
-        assert frame.sample_rate.value == pytest.approx(2048.0)
+        # The frame carries the off-source PSD stretch as well as the segment,
+        # so read the two spans BayesWave actually asks for rather than the
+        # whole (deliberately wider, integer-second) frame span.
+        segment = TimeSeries.read(
+            item.frame, channel=item.channel,
+            start=item.t0, end=item.t0 + item.duration,
+        )
+        assert segment.size == 8192
+        assert segment.sample_rate.value == pytest.approx(2048.0)
+        # Resampling a step embedded in the surrounding off-source zeros rings
+        # at the two boundaries, but the injected segment must survive the
+        # full_strain overlay with its mean intact.
+        assert np.mean(segment.value) == pytest.approx(1.0, abs=1e-3)
+        assert np.max(np.abs(segment.value)) > 0.5
+        psd = TimeSeries.read(
+            item.frame, channel=item.channel,
+            start=item.frame_t0, end=item.frame_t0 + item.psd_length,
+        )
+        assert psd.size == int(64.0 * 2048)
         assert item.cache.read_text().endswith(f"{item.frame.resolve()}\n")
+
+
+def test_offsource_psd_matches_the_vae_window(tmp_path):
+    """psdlength must be 64 s of off-source data, not the analysis segment.
+
+    psdlength == seglen leaves BayesLine fitting a single periodogram of the very
+    data being ranked; the resulting noise evidence moved ~100 nats between chain
+    seeds in the v0.44 campaign.
+    """
+    manifest_path = _write_manifest(tmp_path)
+    manifest = load_event_manifest(manifest_path)
+    inputs = detector_inputs(manifest, manifest_path, "inj_ccsn", tmp_path / "out")
+    first = inputs[0]
+    assert first.has_offsource_psd
+    assert first.psd_length == 64.0
+    # 16 averaged FFTs of the analysis-segment length, and the stretch must stop
+    # before the segment starts so the PSD never sees the event.
+    assert first.psd_length / first.duration == 16
+    assert first.frame_t0 + first.psd_length <= first.t0
+
+    command = bayeswave_command(
+        "BayesWave", inputs, tmp_path / "out", 300.0, 800.0,
+        manifest["sky"], RunSettings(),
+    )
+    assert command[command.index("--psdlength") + 1] == "64.0"
+    assert command[command.index("--psdstart") + 1] == str(first.frame_t0)
+    assert command[command.index("--seglen") + 1] == "4.0"
+
+
+def test_bundle_without_offsource_stretch_is_rejected(tmp_path):
+    manifest_path = _write_manifest(tmp_path, offsource=False)
+    manifest = load_event_manifest(manifest_path)
+    with pytest.raises(ValueError, match="no full_strain"):
+        detector_inputs(manifest, manifest_path, "inj_ccsn", tmp_path / "out")
+    # ...but reproducing a pre-fix run stays possible when asked for explicitly.
+    inputs = detector_inputs(
+        manifest, manifest_path, "inj_ccsn", tmp_path / "out",
+        allow_onsource_psd=True,
+    )
+    assert not inputs[0].has_offsource_psd
+    assert inputs[0].psd_length == inputs[0].duration
 
 
 def test_parse_and_collect_result(tmp_path):

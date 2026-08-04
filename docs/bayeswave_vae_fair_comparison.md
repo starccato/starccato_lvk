@@ -102,68 +102,103 @@ These are **provisional** until the convergence pilot below reports. They are
 computed at BayesWave's production 1e6-iteration settings, and the entire purpose
 of the pilot is to test whether those settings placed the scores correctly.
 
-## The convergence pilot
+## 4. The PSD was estimated from the segment being ranked
 
-A gap this large has two possible explanations, and the analysis above cannot
-distinguish them: either the VAE really is far better on this population, or
-BayesWave was run at settings that had not converged. The pilot settles it.
+The v0.44 campaign passed `--psdlength 4.0` against `--seglen 4.0`, so BayesWave
+estimated its PSD from *the same four seconds it was analysing*:
 
-`studies/select_bw_pilot_events.py` selects 40 events in four strata of ten:
+```text
+Estimating PSD for H1 using 1 segments of 8192 samples (4.000000s)
+```
 
-| stratum | selection | target SNR |
-| --- | --- | --- |
-| `inj_disagree` | injections where the pipelines disagree in sign, lowest SNR first | 10.5-12.6 |
-| `inj_agree` | injections where they agree, SNR-matched one-to-one to the above | 10.5-13.6 |
-| `glitch_disagree` | real blips where they disagree, lowest SNR first | 7.6-9.7 |
-| `glitch_agree` | real blips where they agree, SNR-matched | 7.6-9.7 |
+One periodogram realisation, two degrees of freedom per bin. BayesLine's
+spline-plus-Lorentzian posterior is then almost unconstrained, and the three-seed
+pilot shows what that costs:
 
-The SNR matching is what makes the agreement strata a control rather than
-decoration: unmatched, they would sit at high SNR where nothing is hard, and
-their stability would say nothing about the disagreements.
+| quantity | median seed-to-seed range |
+| --- | --- |
+| `lnZ_noise` | 111.7 nats |
+| `lnZ_signal` | 73.1 nats |
+| `lnZ_glitch` | 91.9 nats |
+| `lnB_S/G` | 18.3 nats |
 
-`slurm/bayeswave_seed_pilot.sh` re-runs all 40 at **4e6 iterations under three
-independent seeds** (120 runs). Everything else is held fixed against the
-production runs -- same manifests, same 300-800 Hz wavelet band inside the same
-2048 Hz detector band, same fixed sky as the VAE analysis -- so any shift is
-attributable to convergence and nothing else.
+The noise model contains **no wavelets at all** -- it is pure BayesLine -- so a
+112-nat seed dependence there is not a transient-sampling problem. All three
+evidences ride the same wandering noise floor; the Bayes factor is smaller only
+because part of it cancels in the difference, and it does not cancel fully
+because each model runs its own independent BayesLine chain. This, not chain
+length, is why 4e6 iterations did not converge.
 
-`studies/bw_pilot_convergence.py` then asks two questions per event:
+The fix needed no new data. Every bundle already carries `full_strain`: 69 s laid
+out as 64 s of off-source data, a 0.5 s gap, then the 4 s analysis segment --
+exactly the manuscript's PSD recipe. Only `strain/values` was ever written to the
+GWF, so BayesWave never saw the other 65 seconds. `prepare_frames` now writes
+`full_strain` and sets `--psdstart`/`--psdlength` to that off-source window, so
+BayesWave uses 16 four-second FFTs from **the same window length and data stretch
+the VAE uses**. The downstream PSD models remain method-specific. A bundle
+without `full_strain` is now
+rejected unless `--allow-onsource-psd` is passed explicitly.
 
-1. **Is the pilot converged?** Reduced chi-square of the three seeds about their
-   inverse-variance-weighted mean. Above 3.0, the seeds disagree by more than
-   BayesWave's reported evidence uncertainty allows, which is itself a finding
-   about the reported uncertainty.
-2. **Did production get the right answer?** Shift of the pilot mean from the 1e6
-   value in units of the combined uncertainty. Above 3 sigma is material.
+Every `result.json` records the PSD configuration it was produced under, so a
+pre-fix evidence can never be silently pooled with a post-fix one.
 
-The decision rule, applied to the fraction of the pilot that is not `stable`:
+## 5. Archived PSDs were stored as float32 and destroyed
 
-- **<= 10% -> `settings_adequate`.** The VAE's advantage on this population is
-  real. Publish the numbers above, refreshed.
-- **>= 25% -> `rerun_full_cohort`.** The production settings materially misplaced
-  the scores; re-run the entire matched cohort at 4e6 before any comparison is
-  quoted.
-- **in between -> `ambiguous`.** Extend the pilot; do not decide.
+`_load_dat` cast every BayesWave table to float32. A PSD in physical strain units
+sits near 1e-46, below float32's smallest subnormal (1.4e-45), so the cast
+flushed it to zero; the reciprocal whitening column overflowed to `inf` at the
+other end. **All 1,682 stored PSDs in the v0.44 archive are damaged** -- 264
+entirely zero, 1,418 partly, none clean -- which is why no usable
+common-whitening pair exists for the waveform overlay.
 
-Events that never complete enough seeds are the `incomplete` outcome category and
-are reported as such.
+Tables are now parsed in float64 and narrowed to float32 only where that cannot
+underflow or overflow, decided per array rather than per dataset name. A rebuild
+repairs a damaged dataset in place when the source `.dat` still exists (3,364 do)
+and leaves it alone when it does not, so the repair can never replace real data
+with nothing.
+
+This blocks only the waveform-level overlay. The sign comparison needs
+`evidence.dat` alone and is unaffected.
+
+## The pre-registered trust check
+
+The old 419-event table is retired. It was selected using BayesWave's reported
+uncertainty, while the first three-seed pilot showed that this uncertainty could
+substantially understate run-to-run scatter under the broken on-source PSD setup.
+The replacement is intentionally small and makes only a sign-level trust claim.
+
+`studies/select_bw_pilot_events.py` selects the first 12 numerical indices from
+each prepared H1--L1 manifest population: 12 injected CCSNe and 12 cataloged
+blips. It reads no BayesWave result, score, uncertainty, or agreement label.
+This produces 24 attempted events and 72 runs under seeds 11, 22, and 33.
+
+`slurm/bayeswave_seed_pilot.sh` runs the cohort at 4e6 iterations. Both methods
+use the same strain, trigger, 300--800 Hz band, fixed sky, and underlying 64 s
+off-source PSD window. BayesWave still uses its own wavelet and PSD models, so
+the two numerical statistics are not treated as commensurate.
+
+`studies/bw_pilot_convergence.py` reports all three evidences and both
+`lnB_S/G` and `lnB_S/(G or N)`. An event is seed-consistent only if all requested
+seeds complete with finite S/G/N evidences and all seeds agree on the non-zero
+sign of both derived statistics. Reported evidence uncertainty is retained as a
+diagnostic but never used to select events or decide acceptance. The output
+includes every attempted event, numerical seed ranges, convergence-failure
+counts, and the manuscript-ready four-cell contingency table on the
+seed-consistent subset.
 
 ## How to state the result
 
 The comparison is a **CCSN-targeted VAE against a morphology-agnostic BayesWave
-baseline**. BayesWave is given no CCSN waveform family, no training set, and no
-morphological prior; the VAE is given all three. An AUC gap follows from that
-asymmetry alone, and the honest claim is about what the targeted prior buys, not
-about BayesWave being deficient at the job it was designed for. Any framing that
-reads as "BayesWave fails" should be rewritten as "the targeted prior recovers
-signals at a false-alarm rate the morphology-agnostic search cannot reach on this
-population".
+check**. BayesWave is given no CCSN waveform family, training set, or targeted
+morphological prior. Agreement in sign supports the learned-prior result;
+disagreement is not evidence against the VAE and must be interpreted in light of
+the harder question BayesWave is being asked.
 
 ## Running it
 
 The pilot reads its inputs from oz303 but **writes to oz980**. Each BayesWave run
-holds about 600 files while sampling, so 120 runs at 40-way concurrency need
-~25k spare inodes; oz303 was at 97% of its 1M-file group quota when this pilot
+holds about 600 files while sampling, so 72 runs at 24-way concurrency need
+about 15k spare inodes; oz303 was at 97% of its 1M-file group quota when this pilot
 was launched, and exhausting it kills every job in the group at startup with
 `RaisedSignal:53`, not just this one. Check `lfs quota -g oz303 /fred` before
 moving it back.
@@ -173,14 +208,16 @@ R=/fred/oz303/avajpeyi/results/starccato_lvk
 P=/fred/oz980/avajpeyi/results/starccato_lvk/bw_seed_pilot
 
 python studies/select_bw_pilot_events.py \
-  --paired $R/paired_lno_vs_bayeswave.csv \
+  --ccsn-manifests $R/bwcomp_nml_v044_ccsn/data/rn_H1_L1 \
+  --glitch-manifests $R/bwcomp_nml_v044_glitch/data/rn_H1_L1 \
   --out $P/pilot_cohort.json
 
-sbatch --array=0-119%40 slurm/bayeswave_seed_pilot.sh
+sbatch --array=0-71%24 slurm/bayeswave_seed_pilot.sh
 
 python studies/bw_pilot_convergence.py \
   --pilot-root $P \
-  --paired $R/paired_lno_vs_bayeswave.csv
+  --paired $R/paired_lno_vs_bayeswave.csv \
+  --table ../manuscript/bayeswave_sign_table.tex
 
 python studies/bw_vae_roc.py \
   --paired $R/paired_lno_vs_bayeswave.csv \

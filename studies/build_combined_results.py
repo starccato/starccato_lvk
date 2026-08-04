@@ -77,31 +77,32 @@ def _add_if_absent(group: h5py.Group, name: str, data) -> bool:
     Posterior products are pruned from disk once archived, so a rebuild must
     carry forward what it can no longer re-read. Overwriting here previously
     destroyed the draws for 846 already-pruned events.
+
+    The one exception is repairing a float32 dataset that underflowed to zero
+    when the source .dat still exists (see ``_narrow``). That is not clobbering
+    good data -- the stored array is all zeros and carries no information -- and
+    the source is right there. If the source is gone, the damaged array is left
+    alone rather than replaced with nothing.
     """
     if name in group:
-        return False
-    group.create_dataset(name, data=data, compression="gzip", compression_opts=4)
-    return True
-
-
-def _add_or_upgrade_physical_psd(
-    group: h5py.Group, name: str, data: np.ndarray
-) -> bool:
-    """Store a physical PSD in float64, upgrading an older float32 dataset.
-
-    The general posterior archive is intentionally append-only because its
-    source products may already have been pruned.  PSD precision is a special
-    case: an existing float32 dataset is known to be lossy at O3 PSD scales, so
-    a fresh float64 source is strictly better and may replace it.
-    """
-    values = np.asarray(data, dtype=np.float64)
-    if name in group:
-        if group[name].dtype.itemsize >= values.dtype.itemsize:
+        existing = group[name]
+        fresh = np.asarray(data)
+        underflowed = False
+        if (
+            existing.dtype == np.float32
+            and fresh.dtype == np.float64
+            and existing.shape == fresh.shape
+            and existing.size
+        ):
+            stored = existing[:]
+            # Detect the damage directly rather than assuming an all-zero array:
+            # values just above float32's subnormal floor survive the cast, so a
+            # ruined PSD is typically mostly -- not entirely -- zeros.
+            underflowed = bool(np.any((stored == 0.0) & (fresh != 0.0)))
+        if not underflowed:
             return False
         del group[name]
-    group.create_dataset(
-        name, data=values, compression="gzip", compression_opts=4
-    )
+    group.create_dataset(name, data=data, compression="gzip", compression_opts=4)
     return True
 
 
@@ -198,7 +199,30 @@ def collect_lno(results_root: Path, campaign: str, h5f: h5py.File) -> int:
 # BayesWave results + posterior waveform draws
 # --------------------------------------------------------------------------
 
-def _load_dat(path: Path, *, dtype=np.float32) -> np.ndarray | None:
+def _narrow(values: np.ndarray) -> np.ndarray:
+    """Store as float32 only where that is lossless in magnitude.
+
+    Whitened waveforms and time axes are O(1) and halve in size for free, but a
+    PSD in physical strain units sits near 1e-46 -- far below float32's smallest
+    subnormal (~1.4e-45) -- so the naive cast silently flushed every PSD value to
+    zero. That destroyed the common-whitening reference the VAE/BayesWave
+    waveform overlay needs: of the v0.44 archive, 709 stored PSDs underflowed and
+    132 were malformed, leaving no usable pair.
+
+    Deciding per array rather than per dataset name means a future product with
+    extreme dynamic range is protected without anyone remembering to add it.
+    """
+    finite = values[np.isfinite(values)]
+    nonzero = finite[finite != 0.0]
+    if nonzero.size:
+        magnitude = np.abs(nonzero)
+        info = np.finfo(np.float32)
+        if magnitude.min() < info.tiny or magnitude.max() > info.max:
+            return values.astype(np.float64)
+    return values.astype(np.float32)
+
+
+def _load_dat(path: Path) -> np.ndarray | None:
     """Load a BayesWave .dat table, salvaging truncated files.
 
     Runs killed mid-write (the inode quota filling up, a scancel during
@@ -206,14 +230,13 @@ def _load_dat(path: Path, *, dtype=np.float32) -> np.ndarray | None:
     whole file -- discarding the complete posterior draws that precede it. Keep
     every whole row instead: 26 valid draws are worth far more than none.
 
-    Large waveform products default to float32 to control archive size.  Callers
-    must request float64 for physical PSDs: O3 PSD values are typically around
-    1e-46 1/Hz and silently underflow if cast to float32.
+    Parsing is always done in float64; only the stored precision is narrowed,
+    and only where that cannot underflow (see ``_narrow``).
     """
     if not path.is_file():
         return None
     try:
-        return np.loadtxt(path, dtype=dtype)
+        return _narrow(np.loadtxt(path, dtype=np.float64))
     except ValueError:
         rows: list[list[str]] = []
         ncol: int | None = None
@@ -230,7 +253,7 @@ def _load_dat(path: Path, *, dtype=np.float32) -> np.ndarray | None:
         if not rows:
             return None
         try:
-            return np.asarray(rows, dtype=dtype)
+            return _narrow(np.asarray(rows, dtype=np.float64))
         except ValueError:
             return None
     except Exception:
@@ -334,14 +357,9 @@ def collect_bayeswave(results_root: Path, campaign: str, cls: str, h5f: h5py.Fil
                 # waveform with, so the morphology overlay compares like with
                 # like. Archiving it here is what makes it safe to delete the
                 # post/ directories afterwards.
-                psd = _load_dat(
-                    post_signal / f"signal_median_PSD_{ifo}.dat",
-                    dtype=np.float64,
-                )
+                psd = _load_dat(post_signal / f"signal_median_PSD_{ifo}.dat")
                 if psd is not None:
-                    _add_or_upgrade_physical_psd(
-                        ev_grp, f"signal_median_psd_{ifo}", psd
-                    )
+                    _add_if_absent(ev_grp, f"signal_median_psd_{ifo}", psd)
                 # Median reconstruction: recoverable from the draws, but cheap
                 # and it is what most summary figures actually plot.
                 med = _load_dat(post_signal / f"signal_median_time_domain_waveform_{ifo}.dat")
