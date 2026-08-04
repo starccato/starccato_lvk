@@ -161,17 +161,25 @@ population".
 
 ## Running it
 
+The pilot reads its inputs from oz303 but **writes to oz980**. Each BayesWave run
+holds about 600 files while sampling, so 120 runs at 40-way concurrency need
+~25k spare inodes; oz303 was at 97% of its 1M-file group quota when this pilot
+was launched, and exhausting it kills every job in the group at startup with
+`RaisedSignal:53`, not just this one. Check `lfs quota -g oz303 /fred` before
+moving it back.
+
 ```bash
 R=/fred/oz303/avajpeyi/results/starccato_lvk
+P=/fred/oz980/avajpeyi/results/starccato_lvk/bw_seed_pilot
 
 python studies/select_bw_pilot_events.py \
   --paired $R/paired_lno_vs_bayeswave.csv \
-  --out $R/bw_seed_pilot/pilot_cohort.json
+  --out $P/pilot_cohort.json
 
 sbatch --array=0-119%40 slurm/bayeswave_seed_pilot.sh
 
 python studies/bw_pilot_convergence.py \
-  --pilot-root $R/bw_seed_pilot \
+  --pilot-root $P \
   --paired $R/paired_lno_vs_bayeswave.csv
 
 python studies/bw_vae_roc.py \
