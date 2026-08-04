@@ -45,7 +45,14 @@ REPO_ROOT=${SLURM_SUBMIT_DIR:-$PWD}
 TASK_ID=${SLURM_ARRAY_TASK_ID:-0}
 
 RESULTS_ROOT=${RESULTS_ROOT:-/fred/oz303/avajpeyi/results/starccato_lvk}
-PILOT_ROOT=${PILOT_ROOT:-${RESULTS_ROOT}/bw_seed_pilot}
+# Inputs (manifests, bundles) are read from RESULTS_ROOT on oz303, but the pilot
+# WRITES to oz980. A BayesWave run holds ~600 files while sampling, so 120 runs
+# at 40-way concurrency need ~25k inodes of headroom, and oz303 sits at 97% of
+# its 1M-file group quota. Exhausting it does not just fail this job: every job
+# in the group that cannot create its output file is killed at startup with
+# RaisedSignal:53. Point PILOT_ROOT back at oz303 only after checking
+# `lfs quota -g oz303 /fred`.
+PILOT_ROOT=${PILOT_ROOT:-/fred/oz980/avajpeyi/results/starccato_lvk/bw_seed_pilot}
 TASK_FILE=${TASK_FILE:-${PILOT_ROOT}/pilot_tasks.txt}
 CCSN_CAMPAIGN=${CCSN_CAMPAIGN:-bwcomp_nml_v044_ccsn}
 GLITCH_CAMPAIGN=${GLITCH_CAMPAIGN:-bwcomp_nml_v044_glitch}
