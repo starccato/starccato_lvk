@@ -31,13 +31,13 @@ metadata to identify their campaign and inputs.
 
 ## VAE-versus-BayesWave fair comparison
 
-See `docs/bayeswave_vae_fair_comparison.md` for why these exist and what replaces
-the retired "N of M correct sign" framing.
+See `docs/bayeswave_vae_fair_comparison.md` for the provenance of the retired
+output-selected comparison and the replacement trust-check contract.
 
-- `select_bw_pilot_events.py`: stratified, SNR-matched 40-event convergence pilot
-  cohort.
-- `bw_pilot_convergence.py`: seed-to-seed and versus-production convergence
-  verdict for that pilot.
+- `select_bw_pilot_events.py`: pre-register the first 12 prepared indices per
+  class without reading BayesWave outputs.
+- `bw_pilot_convergence.py`: three-seed sign-consistency accounting, evidence
+  spreads, and native/aligned manuscript contingency tables.
 - `bw_vae_roc.py`: ROC/AUC and matched-empirical-FPF efficiency over the full
   valid cohort, native and hypothesis-aligned.
 
