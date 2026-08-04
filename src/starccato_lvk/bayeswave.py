@@ -77,7 +77,14 @@ def _frame_span(t0: float, duration: float) -> tuple[int, int]:
 
 @dataclass(frozen=True)
 class DetectorInput:
-    """Frame/cache information for one detector."""
+    """Frame/cache information for one detector.
+
+    ``t0``/``source_samples`` describe the ANALYSIS segment. ``psd_t0``/
+    ``psd_samples`` describe the longer off-source stretch (``full_strain`` in
+    the bundle) that the frame actually carries, from which BayesWave estimates
+    its PSD. Writing only the analysis segment leaves BayesWave estimating the
+    PSD from the same four seconds it analyses -- see ``psd_length``.
+    """
 
     ifo: str
     bundle: Path
@@ -88,6 +95,8 @@ class DetectorInput:
     source_dt: float
     source_samples: int
     sample_rate: float
+    psd_t0: float | None = None
+    psd_samples: int | None = None
 
     @property
     def dt(self) -> float:
@@ -100,6 +109,44 @@ class DetectorInput:
     @property
     def samples(self) -> int:
         return int(round(self.duration * self.sample_rate))
+
+    @property
+    def has_offsource_psd(self) -> bool:
+        return self.psd_t0 is not None and self.psd_samples is not None
+
+    @property
+    def frame_t0(self) -> float:
+        """Start of the data actually written to the GWF."""
+        return self.psd_t0 if self.has_offsource_psd else self.t0
+
+    @property
+    def frame_duration(self) -> float:
+        if not self.has_offsource_psd:
+            return self.duration
+        return self.psd_samples * self.source_dt
+
+    @property
+    def psd_length(self) -> float:
+        """Seconds of off-source data BayesWave may use to estimate the PSD.
+
+        The bundle lays out ``full_strain`` as [off-source PSD stretch, gap,
+        analysis segment], matching the VAE's own PSD recipe. BayesWave
+        median-averages ``psd_length / duration`` FFTs of the analysis segment
+        length, so truncating to a whole multiple of the segment length both
+        matches that estimator and guarantees the PSD stretch stops before the
+        segment starts -- the PSD must never see the event being ranked.
+
+        With psd_length == duration BayesWave estimates the PSD from a SINGLE
+        periodogram of the analysis segment itself. BayesLine is then almost
+        unconstrained, and the resulting noise evidence varies by ~100 nats
+        between chain seeds, which swamps the signal-versus-glitch Bayes factor
+        the campaign exists to measure.
+        """
+        if not self.has_offsource_psd:
+            return self.duration
+        offset = self.t0 - self.psd_t0
+        n_segments = int(math.floor(offset / self.duration))
+        return max(n_segments, 1) * self.duration
 
 
 @dataclass(frozen=True)
@@ -167,7 +214,16 @@ def _resolve_bundle(manifest_path: Path, value: str) -> Path:
     return (manifest_path.parent / path).resolve()
 
 
-def _bundle_header(path: Path) -> tuple[float, float, int]:
+def _bundle_header(
+    path: Path,
+) -> tuple[float, float, int, float | None, int | None]:
+    """Timing of the analysis segment and, when present, the off-source stretch.
+
+    Returns ``(t0, dt, count, psd_t0, psd_count)``. The trailing pair is None for
+    a bundle without ``full_strain``, which forces the caller to decide
+    explicitly whether an on-source PSD is acceptable rather than silently
+    falling back to one.
+    """
     if not path.is_file():
         raise FileNotFoundError(f"analysis bundle not found: {path}")
     with h5py.File(path, "r") as h5:
@@ -183,9 +239,28 @@ def _bundle_header(path: Path) -> tuple[float, float, int]:
                 f"bundle is missing strain timing metadata: {path}"
             ) from exc
         count = int(values.shape[0])
+        psd_t0: float | None = None
+        psd_count: int | None = None
+        if "full_strain/values" in h5:
+            full = h5["full_strain"]
+            psd_count = int(full["values"].shape[0])
+            psd_t0 = float(full.attrs.get("t0", t0))
+            full_dt = float(full.attrs.get("dt", dt))
+            if not np.isclose(full_dt, dt, rtol=0.0, atol=1e-12):
+                raise ValueError(
+                    f"full_strain and strain disagree on dt: {path}"
+                )
+            # full_strain must actually contain the analysis segment, otherwise
+            # the frame we write would not cover what BayesWave analyses.
+            if psd_t0 > t0 + 1e-6 or (
+                psd_t0 + psd_count * dt < t0 + count * dt - 1e-6
+            ):
+                raise ValueError(
+                    f"full_strain does not span the analysis segment: {path}"
+                )
     if not math.isfinite(t0) or not math.isfinite(dt) or dt <= 0 or count <= 0:
         raise ValueError(f"bundle has invalid strain timing or shape: {path}")
-    return t0, dt, count
+    return t0, dt, count, psd_t0, psd_count
 
 
 def detector_inputs(
@@ -194,6 +269,7 @@ def detector_inputs(
     event_class: str,
     output_dir: Path,
     sample_rate: float = 2048.0,
+    allow_onsource_psd: bool = False,
 ) -> list[DetectorInput]:
     """Resolve bundle paths and the deterministic frame/cache filenames."""
 
@@ -214,7 +290,16 @@ def detector_inputs(
                 f"manifest has no {event_class}/{ifo} bundle"
             ) from exc
         bundle = _resolve_bundle(Path(manifest_path).resolve(), raw_path)
-        t0, source_dt, source_count = _bundle_header(bundle)
+        t0, source_dt, source_count, psd_t0, psd_count = _bundle_header(bundle)
+        if psd_t0 is None and not allow_onsource_psd:
+            raise ValueError(
+                f"bundle has no full_strain dataset, so BayesWave would have to "
+                f"estimate its PSD from the same segment it analyses: {bundle}. "
+                "That leaves BayesLine effectively unconstrained (the noise "
+                "evidence then moves ~100 nats between chain seeds). Rebuild the "
+                "bundle with the off-source stretch, or pass --allow-onsource-psd "
+                "to accept it deliberately."
+            )
         header = (t0, source_dt, source_count)
         if reference is None:
             reference = header
@@ -246,7 +331,14 @@ def detector_inputs(
                 "choose a compatible sample rate"
             )
 
-        frame_start, frame_end = _frame_span(t0, duration)
+        # The frame carries the whole off-source stretch, not just the analysis
+        # segment, so BayesWave can estimate its PSD from data that does not
+        # contain the event being ranked.
+        written_t0 = t0 if psd_t0 is None else psd_t0
+        written_duration = (
+            duration if psd_count is None else psd_count * source_dt
+        )
+        frame_start, frame_end = _frame_span(written_t0, written_duration)
         frame_duration = frame_end - frame_start
         tag = f"STARCCATO_E{index}_{event_class.upper()}_SR{int(sample_rate)}"
         frame = (
@@ -266,6 +358,8 @@ def detector_inputs(
                 source_dt=source_dt,
                 source_samples=source_count,
                 sample_rate=sample_rate,
+                psd_t0=psd_t0,
+                psd_samples=psd_count,
             )
         )
     return inputs
@@ -281,17 +375,24 @@ def prepare_frames(
     for item in inputs:
         item.frame.parent.mkdir(parents=True, exist_ok=True)
         if overwrite or not item.frame.is_file():
+            # Write full_strain (the off-source PSD stretch plus the analysis
+            # segment) when the bundle has it, so BayesWave can estimate its PSD
+            # from data that excludes the event. Writing strain/values alone
+            # forces psdlength == seglen, which is what left BayesLine
+            # unconstrained in the v0.44 campaign.
+            dataset = "full_strain/values" if item.has_offsource_psd else "strain/values"
+            expected = (
+                item.psd_samples if item.has_offsource_psd else item.source_samples
+            )
             with h5py.File(item.bundle, "r") as h5:
-                values = np.asarray(h5["strain/values"], dtype=float)
-            if values.size != item.source_samples or not np.all(
-                np.isfinite(values)
-            ):
+                values = np.asarray(h5[dataset], dtype=float)
+            if values.size != expected or not np.all(np.isfinite(values)):
                 raise ValueError(
-                    f"bundle strain is incomplete or non-finite: {item.bundle}"
+                    f"bundle {dataset} is incomplete or non-finite: {item.bundle}"
                 )
             series = TimeSeries(
                 values,
-                t0=item.t0,
+                t0=item.frame_t0,
                 dt=item.source_dt,
                 unit="strain",
                 channel=item.channel,
@@ -299,8 +400,9 @@ def prepare_frames(
             source_rate = 1.0 / item.source_dt
             if not np.isclose(source_rate, item.sample_rate):
                 series = series.resample(item.sample_rate)
-            if series.size != item.samples:
-                sizes = f"{series.size} samples, expected {item.samples}"
+            expected_out = int(round(item.frame_duration * item.sample_rate))
+            if series.size != expected_out:
+                sizes = f"{series.size} samples, expected {expected_out}"
                 raise ValueError(f"resampled frame has {sizes}")
             # Pin the GWF frame span explicitly. Left to itself gwpy takes the
             # frame epoch from the series *span* -- a float that it converts via
@@ -311,16 +413,41 @@ def prepare_frames(
             # of events (only t0 values whose repr is exact, e.g. .609375, got
             # through). Integer-second bounds are exact under both conversions,
             # and they match the span this frame's filename already advertises.
-            frame_start, frame_end = _frame_span(item.t0, item.duration)
+            frame_start, frame_end = _frame_span(
+                item.frame_t0, item.frame_duration
+            )
             series.write(
                 item.frame,
                 format="gwf",
                 start=frame_start,
                 end=frame_end,
             )
+            # The integer-second frame bounds above are wider than the data
+            # (t0 is not on a second boundary), so the frame advertises up to a
+            # second it cannot serve at each edge. Nothing reads the whole span
+            # -- BayesWave reads the PSD stretch and the analysis segment -- but
+            # a frame that cannot serve THOSE is a silent, hours-later failure
+            # deep inside sampling. Two bugs in this file were exactly that, so
+            # check the invariant here where the error is still legible.
+            for label, start, length in (
+                ("PSD stretch", item.frame_t0, item.psd_length),
+                ("analysis segment", item.t0, item.duration),
+            ):
+                try:
+                    TimeSeries.read(
+                        item.frame,
+                        channel=item.channel,
+                        start=start,
+                        end=start + length,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"{item.frame} cannot serve its {label} "
+                        f"[{start}, {start + length}]: {exc}"
+                    ) from exc
 
-        cache_start = math.floor(item.t0)
-        cache_end = math.ceil(item.t0 + item.duration)
+        cache_start = math.floor(item.frame_t0)
+        cache_end = math.ceil(item.frame_t0 + item.frame_duration)
         cache_duration = cache_end - cache_start
         description = item.frame.name.split("-", 2)[1]
         item.cache.write_text(
@@ -368,10 +495,14 @@ def bayeswave_command(
             str(round(first.sample_rate)),
             "--seglen",
             str(first.duration),
+            # Off-source PSD: BayesWave median-averages psdlength/seglen FFTs of
+            # the analysis-segment length, so this reproduces the VAE's own PSD
+            # estimator (64 s of Welch-averaged 4 s FFTs ending before the
+            # segment) and the two pipelines whiten with the same noise model.
             "--psdstart",
-            str(first.t0),
+            str(first.frame_t0),
             "--psdlength",
-            str(first.duration),
+            str(first.psd_length),
             "--Niter",
             str(settings.iterations),
             "--Nburnin",
@@ -459,10 +590,11 @@ def bayeswave_post_command(
             str(round(first.sample_rate)),
             "--seglen",
             str(first.duration),
+            # Must match the sampling run: Post reconstructs the same data.
             "--psdstart",
-            str(first.t0),
+            str(first.frame_t0),
             "--psdlength",
-            str(first.duration),
+            str(first.psd_length),
             "--dataseed",
             str(settings.seed),
             "--outputDir",
@@ -566,6 +698,7 @@ def collect_result(
     output_dir: Path,
     settings: RunSettings,
     elapsed_seconds: float | None = None,
+    inputs: Sequence[DetectorInput] | None = None,
 ) -> dict:
     """Collect evidences and SNR into one machine-readable row."""
 
@@ -583,6 +716,36 @@ def collect_result(
             elapsed_seconds = json.loads(metadata_path.read_text()).get(
                 "elapsed_seconds"
             )
+    if inputs:
+        first = inputs[0]
+        psd_start, psd_length, seglen = (
+            first.frame_t0,
+            first.psd_length,
+            first.duration,
+        )
+    else:
+        # Re-collecting an old output directory: recover the PSD configuration
+        # from the command actually run, so a pre-fix run is never relabelled
+        # as an off-source one.
+        psd_start = psd_length = seglen = None
+        metadata_path = output_dir / "run_metadata.json"
+        if metadata_path.is_file():
+            command = json.loads(metadata_path.read_text()).get(
+                "bayeswave_command"
+            ) or []
+            for flag, name in (
+                ("--psdstart", "psd_start"),
+                ("--psdlength", "psd_length"),
+                ("--seglen", "seglen"),
+            ):
+                if flag in command:
+                    value = float(command[command.index(flag) + 1])
+                    if name == "psd_start":
+                        psd_start = value
+                    elif name == "psd_length":
+                        psd_length = value
+                    else:
+                        seglen = value
     aligned, weight_glitch, weight_noise = aligned_signal_vs_glitch_or_noise(
         signal_logz, glitch_logz, noise_logz
     )
@@ -620,6 +783,25 @@ def collect_result(
             "signal": signal_unc,
             "glitch": glitch_unc,
             "noise": noise_unc,
+        },
+        # Which noise model produced these evidences. An on-source PSD
+        # (psd_length == seglen) makes the evidences unreliable at the ~100-nat
+        # level, so this must travel with every result rather than being
+        # inferred from the campaign it came from.
+        "psd": {
+            "psd_start": psd_start,
+            "psd_length": psd_length,
+            "seglen": seglen,
+            "n_averaged_segments": (
+                int(round(psd_length / seglen))
+                if psd_length and seglen and seglen > 0
+                else None
+            ),
+            "offsource": (
+                bool(psd_length > seglen)
+                if psd_length is not None and seglen is not None
+                else None
+            ),
         },
         "elapsed_seconds": elapsed_seconds,
         "manifest": str(Path(manifest_path).resolve()),
@@ -711,6 +893,15 @@ def build_parser() -> argparse.ArgumentParser:
              "of coherent evidence.",
     )
     parser.add_argument(
+        "--allow-onsource-psd",
+        action="store_true",
+        help="Permit a bundle with no off-source stretch, so BayesWave estimates "
+             "its PSD from the analysis segment itself. This is scientifically "
+             "invalid for evidence comparison -- BayesLine is left almost "
+             "unconstrained and the noise evidence moves ~100 nats between chain "
+             "seeds -- and exists only to reproduce pre-fix runs.",
+    )
+    parser.add_argument(
         "--prepare-only",
         action="store_true",
         help="write frame/cache inputs but do not run BayesWave",
@@ -758,6 +949,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         args.event_class,
         output_dir,
         sample_rate=settings.sample_rate,
+        allow_onsource_psd=args.allow_onsource_psd,
     )
     flow, fmax = (float(value) for value in manifest["band"])
     if flow <= 0 or fmax <= flow:
@@ -926,6 +1118,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         output_dir,
         settings,
         elapsed_seconds=elapsed,
+        inputs=inputs,
     )
     _write_json(output_dir / "result.json", result)
     print(json.dumps(result, indent=2, sort_keys=True), flush=True)

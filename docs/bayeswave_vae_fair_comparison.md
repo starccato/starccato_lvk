@@ -102,6 +102,63 @@ These are **provisional** until the convergence pilot below reports. They are
 computed at BayesWave's production 1e6-iteration settings, and the entire purpose
 of the pilot is to test whether those settings placed the scores correctly.
 
+## 4. The PSD was estimated from the segment being ranked
+
+The v0.44 campaign passed `--psdlength 4.0` against `--seglen 4.0`, so BayesWave
+estimated its PSD from *the same four seconds it was analysing*:
+
+```text
+Estimating PSD for H1 using 1 segments of 8192 samples (4.000000s)
+```
+
+One periodogram realisation, two degrees of freedom per bin. BayesLine's
+spline-plus-Lorentzian posterior is then almost unconstrained, and the three-seed
+pilot shows what that costs:
+
+| quantity | median seed-to-seed range |
+| --- | --- |
+| `lnZ_noise` | 111.7 nats |
+| `lnZ_signal` | 73.1 nats |
+| `lnZ_glitch` | 91.9 nats |
+| `lnB_S/G` | 18.3 nats |
+
+The noise model contains **no wavelets at all** -- it is pure BayesLine -- so a
+112-nat seed dependence there is not a transient-sampling problem. All three
+evidences ride the same wandering noise floor; the Bayes factor is smaller only
+because part of it cancels in the difference, and it does not cancel fully
+because each model runs its own independent BayesLine chain. This, not chain
+length, is why 4e6 iterations did not converge.
+
+The fix needed no new data. Every bundle already carries `full_strain`: 69 s laid
+out as 64 s of off-source data, a 0.5 s gap, then the 4 s analysis segment --
+exactly the manuscript's PSD recipe. Only `strain/values` was ever written to the
+GWF, so BayesWave never saw the other 65 seconds. `prepare_frames` now writes
+`full_strain` and sets `--psdstart`/`--psdlength` to that off-source window, so
+BayesWave median-averages 16 four-second FFTs: **the same estimator, window
+length and data stretch the VAE uses**. A bundle without `full_strain` is now
+rejected unless `--allow-onsource-psd` is passed explicitly.
+
+Every `result.json` records the PSD configuration it was produced under, so a
+pre-fix evidence can never be silently pooled with a post-fix one.
+
+## 5. Archived PSDs were stored as float32 and destroyed
+
+`_load_dat` cast every BayesWave table to float32. A PSD in physical strain units
+sits near 1e-46, below float32's smallest subnormal (1.4e-45), so the cast
+flushed it to zero; the reciprocal whitening column overflowed to `inf` at the
+other end. **All 1,682 stored PSDs in the v0.44 archive are damaged** -- 264
+entirely zero, 1,418 partly, none clean -- which is why no usable
+common-whitening pair exists for the waveform overlay.
+
+Tables are now parsed in float64 and narrowed to float32 only where that cannot
+underflow or overflow, decided per array rather than per dataset name. A rebuild
+repairs a damaged dataset in place when the source `.dat` still exists (3,364 do)
+and leaves it alone when it does not, so the repair can never replace real data
+with nothing.
+
+This blocks only the waveform-level overlay. The sign comparison needs
+`evidence.dat` alone and is unaffected.
+
 ## The convergence pilot
 
 A gap this large has two possible explanations, and the analysis above cannot
