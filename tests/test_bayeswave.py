@@ -5,8 +5,11 @@ import h5py
 import numpy as np
 import pytest
 
+import math
+
 from starccato_lvk.bayeswave import (
     RunSettings,
+    aligned_signal_vs_glitch_or_noise,
     bayeswave_command,
     bayeswave_post_command,
     collect_result,
@@ -222,6 +225,32 @@ def test_parse_and_collect_result(tmp_path):
     assert result["signal_reconstructed_snr_median"] == pytest.approx(5.0)
     assert result["signal_reconstructed_snr_per_detector"] == {"H1": 3.0, "L1": 4.0}
     assert result["target_snr"] == 17.5
+    # Aligned statistic: glitch (8.0) dominates noise (-1.0) in the mixture, so
+    # the denominator is lnZ_glitch + ln(beta) and the aligned value is the
+    # native factor plus ln 2. Its uncertainty is dominated by the same two
+    # terms, with the noise term suppressed by its ~0 mixture weight.
+    assert result["log_bayeswave_signal_glitch_or_noise"] == pytest.approx(
+        4.5 + math.log(2.0), abs=1e-3
+    )
+    assert result["aligned_mixture"]["weight_glitch"] == pytest.approx(1.0, abs=1e-3)
+    assert result["log_bayeswave_signal_glitch_or_noise_uncertainty"] == pytest.approx(
+        0.5, abs=1e-3
+    )
+
+
+def test_aligned_statistic_tracks_the_dominant_denominator_model():
+    # Noise-dominated: the aligned statistic must follow lnZ_noise, NOT lnZ_glitch.
+    # This is the whole point -- a quiet event's native lnB_S/G is the difference
+    # of two rejected models and can sit anywhere.
+    aligned, w_glitch, w_noise = aligned_signal_vs_glitch_or_noise(2.0, -40.0, 1.0)
+    assert w_noise == pytest.approx(1.0, abs=1e-6)
+    assert aligned == pytest.approx(2.0 - 1.0 + math.log(2.0), abs=1e-6)
+    # Equal evidences: the mixture collapses to that common value exactly, and
+    # the weights split evenly.
+    aligned, w_glitch, w_noise = aligned_signal_vs_glitch_or_noise(5.0, 3.0, 3.0)
+    assert aligned == pytest.approx(2.0)
+    assert w_glitch == pytest.approx(0.5)
+    assert w_noise == pytest.approx(0.5)
 
 
 def test_settings_require_thread_factor():

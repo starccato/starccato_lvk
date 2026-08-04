@@ -27,6 +27,48 @@ import numpy as np
 
 EVENT_CLASSES = ("noise", "inj_ccsn", "inj_glitch", "real_glitch")
 
+# Hypothesis-mixture weights for the aligned statistic. These MUST match the
+# defaults that starccato_lvk.analysis.main.run_bcr_posteriors uses to build the
+# VAE log odds (alpha=1.0, beta=0.5); the whole point of the aligned statistic is
+# that both pipelines answer the same question.
+BCR_ALPHA = 1.0
+BCR_BETA = 0.5
+
+
+def aligned_signal_vs_glitch_or_noise(
+    logz_signal: float,
+    logz_glitch: float,
+    logz_noise: float,
+    alpha: float = BCR_ALPHA,
+    beta: float = BCR_BETA,
+) -> tuple[float, float, float]:
+    """S versus (G or N), the hypothesis the VAE log odds actually tests.
+
+    BayesWave's native ``lnZ_signal - lnZ_glitch`` compares signal against glitch
+    ALONE, so an event that is simply quiet -- best explained by the noise model,
+    with both transient models disfavoured -- is scored by the difference of two
+    hypotheses that the data rejects. The VAE statistic instead puts glitch and
+    noise together in the denominator as a mixture, so a quiet event lands near
+    zero rather than wherever the two rejected transient models happen to fall.
+    Comparing the two pipelines on their native statistics compares two different
+    questions; this puts BayesWave on the VAE's question.
+
+    Returns ``(log_odds, weight_glitch, weight_noise)``. The mixture weights are
+    returned because they are also the derivatives needed to propagate the
+    per-model evidence uncertainties.
+    """
+    denominator = np.logaddexp(
+        math.log(beta) + logz_glitch,
+        (math.log1p(-beta) + logz_noise) if beta != 1.0 else -math.inf,
+    )
+    weight_glitch = float(np.exp(math.log(beta) + logz_glitch - denominator))
+    weight_noise = 1.0 - weight_glitch
+    return (
+        float(math.log(alpha) + logz_signal - denominator),
+        weight_glitch,
+        weight_noise,
+    )
+
 
 def _frame_span(t0: float, duration: float) -> tuple[int, int]:
     """Integer-second [start, end) the GWF file covers, per LIGO convention."""
@@ -541,6 +583,14 @@ def collect_result(
             elapsed_seconds = json.loads(metadata_path.read_text()).get(
                 "elapsed_seconds"
             )
+    aligned, weight_glitch, weight_noise = aligned_signal_vs_glitch_or_noise(
+        signal_logz, glitch_logz, noise_logz
+    )
+    aligned_unc = math.sqrt(
+        signal_unc**2
+        + (weight_glitch * glitch_unc) ** 2
+        + (weight_noise * noise_unc) ** 2
+    )
     return {
         "index": int(manifest["index"]),
         "cls": event_class,
@@ -553,6 +603,17 @@ def collect_result(
         "log_bayeswave_signal_glitch_uncertainty": math.hypot(
             signal_unc, glitch_unc
         ),
+        # Aligned with the VAE's log odds: S vs the (glitch, noise) mixture.
+        # Report BOTH -- the native factor is BayesWave's own published statistic
+        # and the aligned one is what a like-for-like comparison needs.
+        "log_bayeswave_signal_glitch_or_noise": aligned,
+        "log_bayeswave_signal_glitch_or_noise_uncertainty": aligned_unc,
+        "aligned_mixture": {
+            "alpha": BCR_ALPHA,
+            "beta": BCR_BETA,
+            "weight_glitch": weight_glitch,
+            "weight_noise": weight_noise,
+        },
         "signal_reconstructed_snr_median": network_snr,
         "signal_reconstructed_snr_per_detector": per_detector_snr,
         "evidence_uncertainty": {

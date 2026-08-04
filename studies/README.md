@@ -29,6 +29,18 @@ metadata to identify their campaign and inputs.
 - `snr_vs_odds_roc.py`: single-detector design-PSD ROC study.
 - `snr_vs_odds_roc_coherent.py`: coherent multi-detector ROC study.
 
+## VAE-versus-BayesWave fair comparison
+
+See `docs/bayeswave_vae_fair_comparison.md` for why these exist and what replaces
+the retired "N of M correct sign" framing.
+
+- `select_bw_pilot_events.py`: stratified, SNR-matched 40-event convergence pilot
+  cohort.
+- `bw_pilot_convergence.py`: seed-to-seed and versus-production convergence
+  verdict for that pilot.
+- `bw_vae_roc.py`: ROC/AUC and matched-empirical-FPF efficiency over the full
+  valid cohort, native and hypothesis-aligned.
+
 ## Manuscript figures and calibration
 
 - `plot_waveform_reconstruction.py`: Starccato/BayesWave reconstruction figure.
