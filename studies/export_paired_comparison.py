@@ -41,7 +41,9 @@ COLUMNS = [
     "bw_logZ_signal", "bw_logZ_glitch", "bw_logZ_noise",
     "bw_target_snr", "bw_reconstructed_snr_median",
     "dq_H1_mean", "dq_L1_mean",
-    "bw_recovered", "bw_degenerate_uncertainty", "bw_posteriors_available",
+    "bw_recovered", "bw_degenerate_uncertainty",
+    "bw_posteriors_reported", "bw_posteriors_available",
+    "bw_posteriors_comparison_ready",
     "bw_evidence_source",
 ]
 
@@ -93,12 +95,42 @@ def main() -> int:
             dq_h1, dq_l1 = _col(lno, "data_quality_H1_mean"), _col(lno, "data_quality_L1_mean")
 
             src = _col(bw, "evidence_source") or ["bayeswave_post"] * bw["index"].shape[0]
+            reported_posteriors = _col(bw, "posteriors_available")
+            posterior_group = bw.get("posteriors")
             for j, raw_index in enumerate(bw["index"][:]):
                 index = int(raw_index)
                 i = lno_idx.get(index)
                 if i is None:
                     unmatched += 1
                     continue
+                embedded = (
+                    posterior_group is not None
+                    and f"e{index}" in posterior_group
+                )
+                event_posteriors = (
+                    posterior_group[f"e{index}"] if embedded else None
+                )
+                waveform_keys = (
+                    "whitened_waveform_draws_H1",
+                    "whitened_waveform_draws_L1",
+                )
+                comparison_keys = waveform_keys + (
+                    "whitened_data_H1",
+                    "whitened_data_L1",
+                    "signal_median_psd_H1",
+                    "signal_median_psd_L1",
+                )
+
+                def has_nonempty(keys: tuple[str, ...]) -> bool:
+                    return bool(
+                        event_posteriors is not None
+                        and all(
+                            key in event_posteriors
+                            and event_posteriors[key].size > 0
+                            for key in keys
+                        )
+                    )
+
                 rows.append({
                     "cls": cls,
                     "index": index,
@@ -120,7 +152,13 @@ def main() -> int:
                     "dq_L1_mean": float(dq_l1[i]),
                     "bw_recovered": int(bw["recovered"][j]),
                     "bw_degenerate_uncertainty": int(bw["degenerate_uncertainty"][j]),
-                    "bw_posteriors_available": int(bw["posteriors_available"][j]),
+                    "bw_posteriors_reported": int(reported_posteriors[j])
+                    if reported_posteriors is not None
+                    else int(not bw["recovered"][j]),
+                    "bw_posteriors_available": int(has_nonempty(waveform_keys)),
+                    "bw_posteriors_comparison_ready": int(
+                        has_nonempty(comparison_keys)
+                    ),
                     "bw_evidence_source": src[j],
                 })
 

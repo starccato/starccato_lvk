@@ -84,6 +84,27 @@ def _add_if_absent(group: h5py.Group, name: str, data) -> bool:
     return True
 
 
+def _add_or_upgrade_physical_psd(
+    group: h5py.Group, name: str, data: np.ndarray
+) -> bool:
+    """Store a physical PSD in float64, upgrading an older float32 dataset.
+
+    The general posterior archive is intentionally append-only because its
+    source products may already have been pruned.  PSD precision is a special
+    case: an existing float32 dataset is known to be lossy at O3 PSD scales, so
+    a fresh float64 source is strictly better and may replace it.
+    """
+    values = np.asarray(data, dtype=np.float64)
+    if name in group:
+        if group[name].dtype.itemsize >= values.dtype.itemsize:
+            return False
+        del group[name]
+    group.create_dataset(
+        name, data=values, compression="gzip", compression_opts=4
+    )
+    return True
+
+
 def _write_vlen_json(group: h5py.Group, name: str, raw_jsons: list[str]) -> None:
     dt = h5py.string_dtype(encoding="utf-8")
     _replace(group, name, data=np.array(raw_jsons, dtype=object), dtype=dt)
@@ -177,18 +198,22 @@ def collect_lno(results_root: Path, campaign: str, h5f: h5py.File) -> int:
 # BayesWave results + posterior waveform draws
 # --------------------------------------------------------------------------
 
-def _load_dat(path: Path) -> np.ndarray | None:
+def _load_dat(path: Path, *, dtype=np.float32) -> np.ndarray | None:
     """Load a BayesWave .dat table, salvaging truncated files.
 
     Runs killed mid-write (the inode quota filling up, a scancel during
     post-processing) leave a final short row, and ``loadtxt`` then rejects the
     whole file -- discarding the complete posterior draws that precede it. Keep
     every whole row instead: 26 valid draws are worth far more than none.
+
+    Large waveform products default to float32 to control archive size.  Callers
+    must request float64 for physical PSDs: O3 PSD values are typically around
+    1e-46 1/Hz and silently underflow if cast to float32.
     """
     if not path.is_file():
         return None
     try:
-        return np.loadtxt(path, dtype=np.float32)
+        return np.loadtxt(path, dtype=dtype)
     except ValueError:
         rows: list[list[str]] = []
         ncol: int | None = None
@@ -205,7 +230,7 @@ def _load_dat(path: Path) -> np.ndarray | None:
         if not rows:
             return None
         try:
-            return np.asarray(rows, dtype=np.float32)
+            return np.asarray(rows, dtype=dtype)
         except ValueError:
             return None
     except Exception:
@@ -269,8 +294,18 @@ def collect_bayeswave(results_root: Path, campaign: str, cls: str, h5f: h5py.Fil
         "degenerate_uncertainty": [
             int(bool(_get(r, "degenerate_uncertainty", default=False))) for r in rows
         ],
+        # A successful result.json does not prove that its posterior products
+        # survived post-processing or pruning. Report only material present in
+        # the live result tree or already embedded in this archive.
         "posteriors_available": [
-            int(bool(_get(r, "posteriors_available", default=True))) for r in rows
+            int(
+                (d / "post" / "signal").is_dir()
+                or (
+                    "posteriors" in grp
+                    and f"e{idx}" in grp["posteriors"]
+                )
+            )
+            for d, idx in zip(event_dirs, indices)
         ],
         "evidence_source": [
             str(_get(r, "evidence_source", default="bayeswave_post")) for r in rows
@@ -299,9 +334,14 @@ def collect_bayeswave(results_root: Path, campaign: str, cls: str, h5f: h5py.Fil
                 # waveform with, so the morphology overlay compares like with
                 # like. Archiving it here is what makes it safe to delete the
                 # post/ directories afterwards.
-                psd = _load_dat(post_signal / f"signal_median_PSD_{ifo}.dat")
+                psd = _load_dat(
+                    post_signal / f"signal_median_PSD_{ifo}.dat",
+                    dtype=np.float64,
+                )
                 if psd is not None:
-                    _add_if_absent(ev_grp, f"signal_median_psd_{ifo}", psd)
+                    _add_or_upgrade_physical_psd(
+                        ev_grp, f"signal_median_psd_{ifo}", psd
+                    )
                 # Median reconstruction: recoverable from the draws, but cheap
                 # and it is what most summary figures actually plot.
                 med = _load_dat(post_signal / f"signal_median_time_domain_waveform_{ifo}.dat")
