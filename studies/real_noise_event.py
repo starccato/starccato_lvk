@@ -494,6 +494,7 @@ def analyse_manifest(
     map_num_starts=128,
     map_maxiter=400,
     save_artifacts=False,
+    time_marginal=False,
 ) -> None:
     detectors = manifest["detectors"]
     flow, fmax = manifest["band"]
@@ -516,6 +517,7 @@ def analyse_manifest(
         "map_maxiter": int(map_maxiter),
         "noise_scale_marginal": bool(nsm),
         "amplitude_marginal": True,
+        "time_marginal": bool(time_marginal),
         "nested_fallback_num_live_points": 300,
         "nested_fallback_max_samples": 6000,
         "flow": float(flow),
@@ -577,6 +579,7 @@ def analyse_manifest(
                 save_diagnostics=True,
                 lnz_method="morph",
                 noise_scale_marginal=nsm,
+                time_marginal=time_marginal,
                 nested_num_live_points=300,
                 nested_max_samples=6000,
             )
@@ -745,6 +748,16 @@ def main() -> None:
         ),
     )
     p.add_argument("--no-marginal", action="store_true")
+    p.add_argument(
+        "--time-marginal",
+        action="store_true",
+        help="Marginalise the transient time over +-25 ms in BOTH hypotheses. "
+             "Without it the coherent signal is pinned at t_c + dt_i (the "
+             "geocentre arrival delay) while the detector-local glitch sits at "
+             "the trigger, so a trigger-centred glitch can be rejected because "
+             "the signal template cannot reach it rather than because it is the "
+             "wrong shape.",
+    )
     p.add_argument(
         "--require-clean-noise",
         action="store_true",
@@ -961,6 +974,7 @@ def main() -> None:
             map_num_starts=args.map_num_starts,
             map_maxiter=args.map_maxiter,
             save_artifacts=args.save_artifacts,
+            time_marginal=args.time_marginal,
         )
         # newSNR/chi^2 baseline: seconds per class, no sampling. Runs on every
         # prepared class (skips existing rows), so the last class task to

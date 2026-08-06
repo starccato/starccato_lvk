@@ -25,6 +25,7 @@ from .jim_likelihood import (
     LikelihoodRunResult,
     MAPInitializationResult,
     draw_conditional_log_amp,
+    draw_conditional_time_and_log_amp,
     find_multistart_map,
     build_transient_likelihood,
     posterior_means,
@@ -32,6 +33,7 @@ from .jim_likelihood import (
     run_numpyro_sampling,
     build_log_density_fn,
     _build_numpyro_model,
+    _TC_HALF_WIDTH_S,
 )
 from .post_proc.jim_plots import (
     plot_data_overview,
@@ -295,6 +297,8 @@ def _nested_evidence(
     nsm_b: Optional[float] = None,
     nsm_per_detector: bool = True,
     marginalize_amplitude: bool = False,
+    marginalize_time: bool = False,
+    tc_half_width: float = _TC_HALF_WIDTH_S,
 ) -> EvidenceResult:
     """Run nested sampling purely to obtain a fallback log-evidence."""
     run = run_nested_sampling(
@@ -312,6 +316,8 @@ def _nested_evidence(
         nsm_b=nsm_b,
         nsm_per_detector=nsm_per_detector,
         marginalize_amplitude=marginalize_amplitude,
+        marginalize_time=marginalize_time,
+        tc_half_width=tc_half_width,
     )
     if not np.isfinite(run.logZ):
         return EvidenceResult.failed(
@@ -1012,6 +1018,8 @@ def run_bcr_posteriors(
     nsm_per_detector: bool = True,
     verify_logz_threshold: Optional[float] = 50.0,
     amplitude_marginal: bool = True,
+    time_marginal: bool = False,
+    tc_half_width: float = _TC_HALF_WIDTH_S,
     signal_map_seed_per_detector: bool = True,
     suspect_signal_margin: Optional[float] = 20.0,
     dq_max_mean_whitened_power: float = 10.0,
@@ -1029,6 +1037,13 @@ def run_bcr_posteriors(
         nsm_b=nsm_b,
         nsm_per_detector=nsm_per_detector,
         marginalize_amplitude=amplitude_marginal,
+        # time_marginal makes the signal and glitch hypotheses commensurable:
+        # without it the signal burst is pinned at t_c + dt_i while the
+        # detector-local glitch sits at the trigger, so a trigger-centred
+        # glitch can be rejected for being unreachable rather than the wrong
+        # shape. Both hypotheses share the window, so the Occam factor matches.
+        marginalize_time=time_marginal,
+        tc_half_width=tc_half_width,
     )
 
     prepare_kwargs = {}
@@ -1210,20 +1225,40 @@ def run_bcr_posteriors(
             **nsm_kwargs,
         )
         if amplitude_marginal:
-            # keep a log_amp column for plots/railing checks: exact 1-D
-            # conditional draws given each latent sample
-            signal_result.samples["log_amp"] = draw_conditional_log_amp(
-                signal_likelihood,
-                signal_result.samples,
-                signal_latent_names,
-                extrinsics,
-                jax.random.fold_in(signal_rng, 999),
-                log_amp_sigma=log_amp_sigma_signal,
-                noise_scale_marginal=noise_scale_marginal,
-                nsm_a=nsm_a,
-                nsm_b=nsm_b,
-                nsm_per_detector=nsm_per_detector,
-            )
+            # keep log_amp (and t_c when the time is marginalized too) for
+            # plots/railing checks: exact conditional draws given each latent
+            # sample. Without the t_c column every reconstruction would sit at
+            # t_c = 0, the pinned time the marginalization removes.
+            if time_marginal:
+                (
+                    signal_result.samples["t_c"],
+                    signal_result.samples["log_amp"],
+                ) = draw_conditional_time_and_log_amp(
+                    signal_likelihood,
+                    signal_result.samples,
+                    signal_latent_names,
+                    extrinsics,
+                    jax.random.fold_in(signal_rng, 999),
+                    log_amp_sigma=log_amp_sigma_signal,
+                    tc_half_width=tc_half_width,
+                    noise_scale_marginal=noise_scale_marginal,
+                    nsm_a=nsm_a,
+                    nsm_b=nsm_b,
+                    nsm_per_detector=nsm_per_detector,
+                )
+            else:
+                signal_result.samples["log_amp"] = draw_conditional_log_amp(
+                    signal_likelihood,
+                    signal_result.samples,
+                    signal_latent_names,
+                    extrinsics,
+                    jax.random.fold_in(signal_rng, 999),
+                    log_amp_sigma=log_amp_sigma_signal,
+                    noise_scale_marginal=noise_scale_marginal,
+                    nsm_a=nsm_a,
+                    nsm_b=nsm_b,
+                    nsm_per_detector=nsm_per_detector,
+                )
 
     _report_effective_sample_sizes(
         "signal", signal_result.extra.get("samples_grouped")
@@ -1431,18 +1466,36 @@ def run_bcr_posteriors(
                 **nsm_kwargs,
             )
             if amplitude_marginal:
-                glitch_result.samples["log_amp"] = draw_conditional_log_amp(
-                    glitch_likelihood,
-                    glitch_result.samples,
-                    glitch_latent_names,
-                    {},
-                    jax.random.fold_in(glitch_rng, 999),
-                    log_amp_sigma=log_amp_sigma_glitch,
-                    noise_scale_marginal=noise_scale_marginal,
-                    nsm_a=nsm_a,
-                    nsm_b=nsm_b,
-                    nsm_per_detector=nsm_per_detector,
-                )
+                if time_marginal:
+                    (
+                        glitch_result.samples["t_c"],
+                        glitch_result.samples["log_amp"],
+                    ) = draw_conditional_time_and_log_amp(
+                        glitch_likelihood,
+                        glitch_result.samples,
+                        glitch_latent_names,
+                        {},
+                        jax.random.fold_in(glitch_rng, 999),
+                        log_amp_sigma=log_amp_sigma_glitch,
+                        tc_half_width=tc_half_width,
+                        noise_scale_marginal=noise_scale_marginal,
+                        nsm_a=nsm_a,
+                        nsm_b=nsm_b,
+                        nsm_per_detector=nsm_per_detector,
+                    )
+                else:
+                    glitch_result.samples["log_amp"] = draw_conditional_log_amp(
+                        glitch_likelihood,
+                        glitch_result.samples,
+                        glitch_latent_names,
+                        {},
+                        jax.random.fold_in(glitch_rng, 999),
+                        log_amp_sigma=log_amp_sigma_glitch,
+                        noise_scale_marginal=noise_scale_marginal,
+                        nsm_a=nsm_a,
+                        nsm_b=nsm_b,
+                        nsm_per_detector=nsm_per_detector,
+                    )
 
         _report_effective_sample_sizes(
             f"glitch {det.name}", glitch_result.extra.get("samples_grouped")

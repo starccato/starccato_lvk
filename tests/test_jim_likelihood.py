@@ -328,3 +328,178 @@ def test_high_level_nuts_workflows_require_two_chains(tmp_path):
         )
     with pytest.raises(ValueError, match="at least two chains"):
         analysis_main.run_bcr_posteriors(["L1"], str(tmp_path), num_chains=1)
+
+
+# --------------------------------------------------------------------------
+# Transient-time marginalization
+# --------------------------------------------------------------------------
+#
+# A toy frequency-domain likelihood with the same interface the real one
+# exposes, so the t_c marginal can be checked against brute force without
+# strain bundles. The maths under test is that b(t) = <h_t|d> for every shift
+# on the grid comes out of ONE inverse real FFT, and that the joint (A, t)
+# integral matches an explicit double sum.
+
+
+class _ToyDetector:
+    def __init__(self, freqs, psd, data):
+        self.sliced_frequencies = freqs
+        self.sliced_psd = psd
+        self.sliced_fd_data = data
+
+    def fd_response(self, freqs, h_sky, params):
+        # Unit antenna response; only the t_c phase matters here, and it uses
+        # the same sign convention as the vendored detector.
+        return h_sky * jnp.exp(-2j * jnp.pi * freqs * params["t_c"])
+
+
+class _ToyLikelihood:
+    """Two detectors, flat in-band PSD, +inf out of band (as in production)."""
+
+    def __init__(self, n_time=256, duration=1.0, flow=20.0, fmax=100.0, seed=0):
+        df = 1.0 / duration
+        freqs = jnp.arange(n_time // 2 + 1) * df
+        band = (freqs >= flow) & (freqs <= fmax)
+        psd = jnp.where(band, 1e-2, jnp.inf)
+        rng = np.random.default_rng(seed)
+        # A burst sitting away from t=0, so a pinned template would miss it.
+        t = np.arange(n_time) / (n_time * df)
+        t = np.where(t < duration / 2, t, t - duration)
+        burst = np.exp(-0.5 * ((t - 0.012) / 0.004) ** 2) * np.cos(
+            2 * np.pi * 60.0 * (t - 0.012)
+        )
+        noise = rng.normal(scale=0.05, size=n_time)
+        self.detectors = [
+            _ToyDetector(freqs, psd, jnp.asarray(np.fft.rfft(burst * s + noise)))
+            for s in (1.0, 0.7)
+        ]
+        self.frequencies = freqs
+        self.trigger_time = 0.0
+        self.gmst = 0.0
+        self._template = jnp.asarray(np.fft.rfft(
+            np.exp(-0.5 * (t / 0.004) ** 2) * np.cos(2 * np.pi * 60.0 * t)
+        ))
+        self.waveform = self._waveform
+
+    def _waveform(self, freqs, params):
+        return self._template * jnp.exp(params["log_amp"])
+
+    def evaluate(self, params, data):
+        df = self.frequencies[1] - self.frequencies[0]
+        total = 0.0
+        h_sky = self.waveform(self.frequencies, params)
+        for ifo in self.detectors:
+            h = ifo.fd_response(ifo.sliced_frequencies, h_sky, params)
+            psd = ifo.sliced_psd
+            total += 4.0 * jnp.sum(
+                jnp.real(jnp.conj(h) * ifo.sliced_fd_data) / psd
+            ) * df - 2.0 * jnp.sum(jnp.real(jnp.conj(h) * h) / psd) * df
+        return total
+
+
+def test_time_grid_spans_the_requested_window():
+    like = _ToyLikelihood()
+    keep, n_time, df, t_values = jim_likelihood._time_grid(like, 0.05)
+    assert n_time == 256
+    assert np.abs(t_values).max() <= 0.05
+    # symmetric about zero and gap-free at the FFT spacing
+    assert np.isclose(t_values.min(), -t_values.max(), atol=1.0 / (n_time * df))
+    assert np.allclose(np.diff(np.sort(t_values)), 1.0 / (n_time * df))
+
+
+def test_amplitude_time_coefficients_match_direct_likelihood_calls():
+    """One inverse FFT must reproduce <h_t|d> at every shift on the grid."""
+    like = _ToyLikelihood()
+    keep, n_time, df, t_values = jim_likelihood._time_grid(like, 0.05)
+    coefficients = jim_likelihood._amplitude_time_coefficients(
+        like, {}, keep, n_time, df
+    )
+    b_fft = sum(np.asarray(b) for b, _ in coefficients)
+    c_fft = float(sum(c for _, c in coefficients))
+
+    for idx in (0, len(t_values) // 3, len(t_values) // 2, len(t_values) - 1):
+        b_direct, c_direct = jim_likelihood._amplitude_quadratic(
+            like, {"t_c": float(t_values[idx])}
+        )
+        assert np.isclose(b_fft[idx], float(b_direct), rtol=1e-9, atol=1e-9)
+        assert np.isclose(c_fft, float(c_direct), rtol=1e-9)
+
+
+def test_time_marginal_matches_brute_force_double_sum():
+    """The joint (A, t) marginal equals an explicit grid integral."""
+    import numpyro.distributions as dist
+
+    like = _ToyLikelihood()
+    half, log_amp_sigma = 0.05, 5.0
+    model, _, _ = jim_likelihood._build_numpyro_model(
+        like, ["z_0"], 1.0, log_amp_sigma, {},
+        marginalize_amplitude=True, marginalize_time=True, tc_half_width=half,
+    )
+    logpost = jim_likelihood.build_log_density_fn(model, {})
+    z = {"z_0": 0.4}
+    log_prior = float(dist.Normal(0.0, 1.0).log_prob(z["z_0"]))
+    got = float(logpost(z)) - log_prior
+
+    keep, n_time, df, t_values = jim_likelihood._time_grid(like, half)
+    u_grid, u_log_prior, u_log_du = jim_likelihood._amplitude_grid(log_amp_sigma)
+    amp = np.exp(np.asarray(u_grid))
+    ll = np.empty((amp.size, t_values.size))
+    for j, t in enumerate(t_values):
+        b, c = jim_likelihood._amplitude_quadratic(like, {**z, "t_c": float(t)})
+        ll[:, j] = amp * float(b) - 0.5 * amp**2 * float(c)
+    from scipy.special import logsumexp
+
+    expected = (
+        logsumexp(ll + np.asarray(u_log_prior)[:, None])
+        + float(u_log_du)
+        - np.log(t_values.size)
+    )
+    assert np.isclose(got, expected, rtol=1e-9, atol=1e-7)
+
+
+def test_time_marginal_leaves_the_amplitude_only_path_unchanged():
+    """Regression: the existing marginalize_amplitude result must not move."""
+    import numpyro.distributions as dist
+    from scipy.special import logsumexp
+
+    like = _ToyLikelihood()
+    log_amp_sigma = 5.0
+    model, _, _ = jim_likelihood._build_numpyro_model(
+        like, ["z_0"], 1.0, log_amp_sigma, {"t_c": 0.0},
+        marginalize_amplitude=True, marginalize_time=False,
+    )
+    logpost = jim_likelihood.build_log_density_fn(model, {})
+    z = {"z_0": 0.4}
+    got = float(logpost(z)) - float(dist.Normal(0.0, 1.0).log_prob(z["z_0"]))
+
+    u_grid, u_log_prior, u_log_du = jim_likelihood._amplitude_grid(log_amp_sigma)
+    amp = np.exp(np.asarray(u_grid))
+    b, c = jim_likelihood._amplitude_quadratic(like, {**z, "t_c": 0.0})
+    expected = (
+        logsumexp(amp * float(b) - 0.5 * amp**2 * float(c)
+                  + np.asarray(u_log_prior))
+        + float(u_log_du)
+    )
+    assert np.isclose(got, expected, rtol=1e-9, atol=1e-7)
+
+
+def test_time_marginal_recovers_an_offset_burst_that_a_pinned_template_misses():
+    """The point of the marginal: a burst 12 ms off the trigger must be found."""
+    like = _ToyLikelihood()
+    pinned, _ = jim_likelihood._amplitude_quadratic(like, {"t_c": 0.0})
+    keep, n_time, df, t_values = jim_likelihood._time_grid(like, 0.05)
+    coefficients = jim_likelihood._amplitude_time_coefficients(
+        like, {}, keep, n_time, df
+    )
+    b_t = np.asarray(sum(b for b, _ in coefficients))
+    assert b_t.max() > 5.0 * abs(float(pinned))
+    assert abs(t_values[int(np.argmax(b_t))] - 0.012) < 2.0 / (n_time * df)
+
+
+def test_time_marginal_rejects_sampled_sky():
+    like = _ToyLikelihood()
+    with pytest.raises(ValueError, match="only one"):
+        jim_likelihood._build_numpyro_model(
+            like, ["z_0"], 1.0, 5.0, {},
+            marginalize_amplitude=True, marginalize_time=True, sample_sky=True,
+        )

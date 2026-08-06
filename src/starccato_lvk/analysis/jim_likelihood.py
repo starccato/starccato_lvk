@@ -23,6 +23,16 @@ jax.config.update("jax_enable_x64", True)
 numpyro.enable_x64()
 enable_x64()
 
+# Transient-time marginalization. The signal hypothesis places its burst at
+# t_c + dt_i (geocentre arrival delay) while the detector-local glitch
+# hypothesis sits at the trigger, so with a FIXED transient time the two models
+# are evaluated at different instants and a trigger-centred glitch can be
+# rejected purely because the signal template cannot reach it. Marginalizing a
+# common t_c over the same window in both hypotheses removes that asymmetry.
+# +-25 ms covers the full geocentre-delay span (|dt| <= ~21 ms), so the signal
+# template can always reach a trigger-centred transient.
+_TC_HALF_WIDTH_S = 0.025
+
 
 @dataclass
 class LikelihoodRunResult:
@@ -141,6 +151,8 @@ def find_multistart_map(
     nsm_b: float | None = None,
     nsm_per_detector: bool = True,
     marginalize_amplitude: bool = False,
+    marginalize_time: bool = False,
+    tc_half_width: float = _TC_HALF_WIDTH_S,
 ) -> MAPInitializationResult:
     """Find a local posterior mode for NUTS without nested sampling.
 
@@ -195,6 +207,8 @@ def find_multistart_map(
         nsm_b=nsm_b,
         nsm_per_detector=nsm_per_detector,
         marginalize_amplitude=marginalize_amplitude,
+        marginalize_time=marginalize_time,
+        tc_half_width=tc_half_width,
     )
     logpost = build_log_density_fn(model, {})
     parameter_names = list(latent_names)
@@ -437,6 +451,65 @@ def _amplitude_quadratic(likelihood, params):
     return b, c
 
 
+def _time_grid(likelihood, tc_half_width: float):
+    """Static FFT time grid for the t_c marginal.
+
+    Returns the in-window sample indices (a concrete NumPy array, so the gather
+    stays jit-friendly), the FFT length, the frequency spacing, and the
+    corresponding t_c values.
+    """
+    freqs = likelihood.detectors[0].sliced_frequencies
+    n_freq = int(freqs.shape[0])
+    n_time = 2 * (n_freq - 1)
+    df = float(freqs[1] - freqs[0])
+    dt = 1.0 / (n_time * df)
+    index = np.arange(n_time)
+    t = np.where(index < n_time // 2, index, index - n_time) * dt
+    keep = np.flatnonzero(np.abs(t) <= float(tc_half_width))
+    if keep.size == 0:
+        raise ValueError(
+            f"tc_half_width={tc_half_width} s spans no FFT sample "
+            f"(spacing {dt * 1e3:.3f} ms)."
+        )
+    return keep, n_time, df, t[keep]
+
+
+def _amplitude_time_coefficients(likelihood, params, keep, n_time, df):
+    """Per-detector ``(b(t), c)`` for the unit-amplitude template.
+
+    ``log L(A, t) = A b(t) - A^2 c / 2`` with ``b(t) = <h_t|d>`` and
+    ``c = <h|h>`` (independent of the shift, which is a pure phase). Every
+    ``b(t)`` comes from one inverse real FFT rather than one likelihood call per
+    grid point.
+
+    With ``X(f) = h*(f) d(f) / S(f)`` on the full rfft grid,
+    ``b(t_m) = 4 df Re sum_f X(f) e^{2 pi i f t_m}``, and because the analysis
+    band is imposed by setting the PSD to ``+inf`` outside it, the zero and
+    Nyquist bins of ``X`` vanish and the Hermitian sum reduces exactly to
+    ``b(t_m) = 2 N df * irfft(X, n=N)[m]``.
+    """
+    base = {
+        **params,
+        "log_amp": 0.0,
+        # The FFT supplies the shift, so the template is built unshifted; the
+        # marginal is therefore over the absolute geocentre offset from the
+        # trigger, whatever t_c the caller's fixed parameters carried.
+        "t_c": 0.0,
+        "trigger_time": likelihood.trigger_time,
+        "gmst": likelihood.gmst,
+    }
+    waveform_sky = likelihood.waveform(likelihood.frequencies, base)
+    coefficients = []
+    for ifo in likelihood.detectors:
+        psd = ifo.sliced_psd
+        h = ifo.fd_response(ifo.sliced_frequencies, waveform_sky, base)
+        x = jnp.conj(h) * ifo.sliced_fd_data / psd
+        b_t = 2.0 * n_time * df * jnp.fft.irfft(x, n=n_time)
+        c = 4.0 * jnp.sum(jnp.real(jnp.conj(h) * h) / psd) * df
+        coefficients.append((b_t[keep], c))
+    return coefficients
+
+
 def _build_numpyro_model(
     likelihood: TransientLikelihoodFD,
     latent_names,
@@ -450,6 +523,8 @@ def _build_numpyro_model(
     sample_sky: bool = False,
     t_c_sigma: float = 0.01,
     marginalize_amplitude: bool = False,
+    marginalize_time: bool = False,
+    tc_half_width: float = _TC_HALF_WIDTH_S,
 ):
     """Build the NumPyro model for the signal/glitch posterior.
 
@@ -473,6 +548,17 @@ def _build_numpyro_model(
     removes the low-amplitude funnel that makes NUTS diverge whenever the data
     do not constrain the amplitude, leaving a smooth ``len(latent_names)``-D
     posterior. The evidence is unchanged: Z = int p(z) L_marg(z) dz.
+
+    With ``marginalize_time`` the transient time is additionally integrated out
+    under a uniform prior on ``|t_c| <= tc_half_width``, using one inverse FFT
+    per detector rather than one likelihood call per grid node. This is what
+    makes the signal and glitch hypotheses commensurable: with a fixed transient
+    time the signal burst sits at ``t_c + dt_i`` (geocentre delay) while the
+    detector-local glitch sits at the trigger, so a trigger-centred glitch can
+    be rejected because the signal template cannot reach it rather than because
+    it is the wrong shape. Both hypotheses get the same window, so the Occam
+    factor is identical; for the coherent signal a single shared ``t_c`` moves
+    every detector together and inter-detector coherence is preserved.
     """
     latent_names = list(latent_names)
     latent_sigma_arr = _normalise_latent_sigma(latent_sigma, latent_names)
@@ -520,6 +606,28 @@ def _build_numpyro_model(
         u_grid, u_log_prior, u_log_du = _amplitude_grid(log_amp_sigma)
         amp_grid = jnp.exp(u_grid)
 
+    if marginalize_time:
+        if sample_sky:
+            raise ValueError(
+                "marginalize_time and sample_sky both control t_c; enable only one."
+            )
+        tc_keep, tc_n_time, tc_df, tc_values = _time_grid(
+            likelihood, tc_half_width
+        )
+        # Uniform prior over the in-window grid nodes: the 1/n_t weight is the
+        # Occam factor for the time freedom, and it is identical in both
+        # hypotheses because both use the same window.
+        tc_log_weight = -np.log(float(tc_keep.size))
+        # _amplitude_time_coefficients already returns one (b(t), c) pair per
+        # detector, so the per-detector eta marginal needs the (dd, n_bins)
+        # bookkeeping only -- not the single-detector sub-likelihoods that the
+        # scalar amplitude path has to build.
+        nsm_time_bookkeeping = (
+            [(dd_i, n_i) for _, dd_i, n_i in nsm_terms]
+            if nsm_terms is not None
+            else None
+        )
+
     def model():
         params = {}
         for idx, name in enumerate(latent_names):
@@ -542,7 +650,61 @@ def _build_numpyro_model(
             params["dec"] = jnp.arcsin(u_sky[2])
             params["psi"] = numpyro.sample("psi", dist.Uniform(0.0, jnp.pi))
             params["t_c"] = numpyro.sample("t_c", dist.Normal(0.0, t_c_sigma))
-        if marginalize_amplitude:
+        if marginalize_time:
+            coefficients = _amplitude_time_coefficients(
+                likelihood, params, tc_keep, tc_n_time, tc_df
+            )
+            if marginalize_amplitude:
+                # log L(A, t) on the outer product of the two grids:
+                # (n_amp, n_t). c is time-independent, so only b carries t.
+                amp = amp_grid[:, None]
+                if nsm_time_bookkeeping is not None:
+                    log_like_ut = 0.0
+                    for (b_i, c_i), (dd_i, n_i) in zip(
+                        coefficients, nsm_time_bookkeeping
+                    ):
+                        gauss_i = amp * b_i[None, :] - 0.5 * amp**2 * c_i
+                        log_like_ut = log_like_ut + _nsm(
+                            dd_i - 2.0 * gauss_i, dd_i, n_i
+                        )
+                else:
+                    b_t = sum(b for b, _ in coefficients)
+                    c_val = sum(c for _, c in coefficients)
+                    log_like_ut = amp * b_t[None, :] - 0.5 * amp**2 * c_val
+                    if noise_scale_marginal:
+                        log_like_ut = _nsm(
+                            dd_total - 2.0 * log_like_ut, dd_total, n_total
+                        )
+                log_like = (
+                    jax.scipy.special.logsumexp(
+                        log_like_ut + u_log_prior[:, None]
+                    )
+                    + u_log_du
+                    + tc_log_weight
+                )
+            else:
+                amp = jnp.exp(params["log_amp"])
+                if nsm_time_bookkeeping is not None:
+                    log_like_t = 0.0
+                    for (b_i, c_i), (dd_i, n_i) in zip(
+                        coefficients, nsm_time_bookkeeping
+                    ):
+                        gauss_i = amp * b_i - 0.5 * amp**2 * c_i
+                        log_like_t = log_like_t + _nsm(
+                            dd_i - 2.0 * gauss_i, dd_i, n_i
+                        )
+                else:
+                    b_t = sum(b for b, _ in coefficients)
+                    c_val = sum(c for _, c in coefficients)
+                    log_like_t = amp * b_t - 0.5 * amp**2 * c_val
+                    if noise_scale_marginal:
+                        log_like_t = _nsm(
+                            dd_total - 2.0 * log_like_t, dd_total, n_total
+                        )
+                log_like = (
+                    jax.scipy.special.logsumexp(log_like_t) + tc_log_weight
+                )
+        elif marginalize_amplitude:
             if nsm_terms is not None:
                 # Sum the per-detector eta-marginals at each amplitude, then
                 # integrate over the amplitude once (the detectors share A but
@@ -651,6 +813,92 @@ def draw_conditional_log_amp(
     return np.asarray(draws, dtype=np.float64)
 
 
+def draw_conditional_time_and_log_amp(
+    likelihood: TransientLikelihoodFD,
+    samples: Mapping[str, np.ndarray],
+    latent_names,
+    fixed_params: Mapping[str, float],
+    rng_key: jax.Array,
+    *,
+    log_amp_sigma: float = 5.0,
+    tc_half_width: float = _TC_HALF_WIDTH_S,
+    noise_scale_marginal: bool = False,
+    nsm_a: float = 100.0,
+    nsm_b: float | None = None,
+    nsm_per_detector: bool = True,
+) -> tuple[np.ndarray, np.ndarray]:
+    """Joint ``(t_c, log_amp)`` draw from the exact 2-D conditional per sample.
+
+    The time-marginalized sampler explores the latent only, so the saved
+    posterior needs both columns restored or every downstream reconstruction
+    would place the template at ``t_c = 0`` -- which is precisely the pinned
+    time the marginalization exists to remove. Drawing jointly (rather than
+    ``t_c`` then ``log_amp``) matters because the two are correlated: a
+    template sitting slightly off the burst compensates with a smaller
+    amplitude.
+    """
+    latent_names = list(latent_names)
+    u_grid, u_log_prior, _ = _amplitude_grid(float(log_amp_sigma))
+    amp_grid = jnp.exp(u_grid)
+    keep, n_time, df, t_values = _time_grid(likelihood, tc_half_width)
+    n_u, n_t = u_grid.shape[0], int(keep.size)
+
+    dd_total = n_total = b_val = None
+    nsm_book = None
+    if noise_scale_marginal:
+        from .noise_evidence import band_quantities
+
+        qs = [band_quantities(det) for det in likelihood.detectors]
+        dd_total = float(sum(q.dd for q in qs))
+        n_total = int(sum(q.n_bins for q in qs))
+        b_val = float(nsm_a - 1.0) if nsm_b is None else float(nsm_b)
+        if nsm_per_detector and len(likelihood.detectors) > 1:
+            nsm_book = [(float(q.dd), int(q.n_bins)) for q in qs]
+
+    fixed = {
+        key: jnp.asarray(value) for key, value in dict(fixed_params).items()
+    }
+    t_grid = jnp.asarray(t_values)
+
+    def _nsm(resid, dd, n_bins):
+        return -(n_bins + nsm_a) * (
+            jnp.log(resid / 2.0 + b_val) - jnp.log(dd / 2.0 + b_val)
+        )
+
+    def conditional_draw(z_row, key):
+        params = {name: z_row[idx] for idx, name in enumerate(latent_names)}
+        coefficients = _amplitude_time_coefficients(
+            likelihood, {**params, **fixed}, keep, n_time, df
+        )
+        amp = amp_grid[:, None]
+        if nsm_book is not None:
+            log_like = 0.0
+            for (b_i, c_i), (dd_i, n_i) in zip(coefficients, nsm_book):
+                gauss_i = amp * b_i[None, :] - 0.5 * amp**2 * c_i
+                log_like = log_like + _nsm(dd_i - 2.0 * gauss_i, dd_i, n_i)
+        else:
+            b_t = sum(b for b, _ in coefficients)
+            c_val = sum(c for _, c in coefficients)
+            log_like = amp * b_t[None, :] - 0.5 * amp**2 * c_val
+            if noise_scale_marginal:
+                log_like = _nsm(dd_total - 2.0 * log_like, dd_total, n_total)
+        logits = (log_like + u_log_prior[:, None]).reshape(-1)
+        flat = dist.Categorical(logits=logits).sample(key)
+        return t_grid[flat % n_t], u_grid[flat // n_t]
+
+    z_matrix = jnp.stack(
+        [jnp.asarray(samples[name]) for name in latent_names], axis=1
+    )
+    keys = jax.random.split(rng_key, z_matrix.shape[0])
+    t_draws, u_draws = jax.lax.map(
+        lambda args: conditional_draw(args[0], args[1]), (z_matrix, keys)
+    )
+    return (
+        np.asarray(t_draws, dtype=np.float64),
+        np.asarray(u_draws, dtype=np.float64),
+    )
+
+
 def run_numpyro_sampling(
     likelihood: TransientLikelihoodFD,
     *,
@@ -675,6 +923,8 @@ def run_numpyro_sampling(
     nsm_per_detector: bool = True,
     sample_sky: bool = False,
     marginalize_amplitude: bool = False,
+    marginalize_time: bool = False,
+    tc_half_width: float = _TC_HALF_WIDTH_S,
 ) -> LikelihoodRunResult:
     """Run NumPyro NUTS sampling for the supplied likelihood."""
     if not 0.0 < target_accept_prob < 1.0:
@@ -702,6 +952,8 @@ def run_numpyro_sampling(
         nsm_per_detector=nsm_per_detector,
         sample_sky=sample_sky,
         marginalize_amplitude=marginalize_amplitude,
+        marginalize_time=marginalize_time,
+        tc_half_width=tc_half_width,
     )
 
     strategy = (
@@ -793,6 +1045,8 @@ def run_nested_sampling(
     nsm_per_detector: bool = True,
     sample_sky: bool = False,
     marginalize_amplitude: bool = False,
+    marginalize_time: bool = False,
+    tc_half_width: float = _TC_HALF_WIDTH_S,
 ) -> LikelihoodRunResult:
     """Run JIM nested sampling using the supplied likelihood."""
     model, _, _ = _build_numpyro_model(
@@ -807,6 +1061,8 @@ def run_nested_sampling(
         nsm_per_detector=nsm_per_detector,
         sample_sky=sample_sky,
         marginalize_amplitude=marginalize_amplitude,
+        marginalize_time=marginalize_time,
+        tc_half_width=tc_half_width,
     )
 
     ns = NestedSampler(
